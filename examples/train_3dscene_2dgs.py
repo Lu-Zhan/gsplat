@@ -10,7 +10,6 @@ import nerfview
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.tensorboard.summary import video
 import tqdm
 import tyro
 import viser
@@ -30,6 +29,8 @@ from utils import (
     set_random_seed,
 )
 
+
+from gsplat.cuda._wrapper import spherical_harmonics
 from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrapper
 from gsplat.strategy import DefaultStrategy
 
@@ -160,6 +161,12 @@ class Config:
     # Iteration to start distortion loss regulerization
     dist_start_iter: int = 3_000
 
+    # luzhan: intrinsics loss and direct normal loss
+    intrinsics_loss: bool = False
+    intrinsics_lambda: float = 1e-2
+    direct_normal_loss: bool = False
+    direct_normal_lambda: float = 1e-2
+
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
 
@@ -230,6 +237,10 @@ def create_splats_with_optimizers(
         params.append(("features", torch.nn.Parameter(features), 2.5e-3))
         colors = torch.logit(rgbs)  # [N, 3]
         params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
+    
+    # luzhan: add intrinsics for albedo, roughness, metallic, irradiance
+    intrinsics = torch.logit(torch.rand((N, 5)))
+    params.append(("intrinsics", torch.nn.Parameter(intrinsics), 2.5e-3))
 
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
@@ -409,6 +420,15 @@ class Runner:
             colors = torch.sigmoid(colors)
         else:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+        
+        # luzhan: concat intrinsics into colors
+        ## step1: transfer sh to rgb 
+        dirs = means[None, :, :] - camtoworlds[:, None, :3, 3]
+        sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree)
+        colors = spherical_harmonics(sh_degree, dirs[0], colors)   # [N, 3]
+        # make it apple-to-apple with Inria's CUDA Backend.
+        colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
+        colors = torch.cat([colors, self.splats["intrinsics"]], dim=-1) # [N, 3+5]
 
         assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
 
@@ -529,6 +549,13 @@ class Runner:
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
                 depths_gt = data["depths"].to(device)  # [1, M]
+            
+            # luzhan: load gt intrinsics and normals
+            if cfg.intrinsics_loss:
+                intrinsics_gt = data["intrinsics"].to(device)
+            
+            if cfg.direct_normal_loss:
+                normals_gt = data["normals"].to(device)
 
             height, width = pixels.shape[1:3]
 
@@ -562,10 +589,14 @@ class Runner:
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
             )
+
+            # luzhan: unpack intrinsics and depths from renders
             if renders.shape[-1] == 4:
-                colors, depths = renders[..., 0:3], renders[..., 3:4]
+                colors, intrinsics, depths = renders[..., 0:3], None, renders[..., 3:4]
+            elif renders.shape[-1] == 9:
+                colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
             else:
-                colors, depths = renders, None
+                colors, intrinsics, depths = renders, None, None
 
             if cfg.random_bkgd:
                 bkgd = torch.rand(1, 3, device=device)
@@ -632,6 +663,15 @@ class Runner:
                 distloss = render_distort.mean()
                 loss += distloss * curr_dist_lambda
 
+            # luzhan: add more losses, including intrinsics loss, direct normal loss
+            if cfg.intrinsics_loss:
+                intrinsics_loss = F.l1_loss(intrinsics, intrinsics_gt)
+                loss += intrinsics_loss * cfg.intrinsics_lambda
+            
+            if cfg.direct_normal_loss:
+                direct_normal_loss = F.l1_loss(normals, normals_gt)
+                loss += direct_normal_loss * cfg.direct_normal_lambda
+
             loss.backward()
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
@@ -658,6 +698,13 @@ class Runner:
                     self.writer.add_scalar("train/normalloss", normalloss.item(), step)
                 if cfg.dist_loss:
                     self.writer.add_scalar("train/distloss", distloss.item(), step)
+                
+                # luzhan: add more losses, including intrinsics loss, direct normal loss
+                if cfg.intrinsics_loss:
+                    self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.item(), step)
+                if cfg.direct_normal_loss:
+                    self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.item(), step)
+
                 if cfg.tb_save_image:
                     canvas = (
                         torch.cat([pixels, colors[..., :3]], dim=2)
@@ -780,6 +827,10 @@ class Runner:
                 render_mode="RGB+ED",
             )  # [1, H, W, 3]
             colors = torch.clamp(colors, 0.0, 1.0)
+
+            # luzhan: take intrinsics
+            intrinsics = colors[..., 3:-1]  # (1, H, W, 5)
+
             colors = colors[..., :3]  # Take RGB channels
             torch.cuda.synchronize()
             ellipse_time += time.time() - tic
@@ -840,6 +891,25 @@ class Runner:
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_distortions_{step}.png", render_dist
             )
+
+            # write alphas
+            alphas = alphas.repeat(1, 1, 1, 3).squeeze(0).detach().cpu().numpy()
+            alphas = (alphas - np.min(alphas)) / (np.max(alphas) - np.min(alphas))
+            alphas = (alphas * 255).astype(np.uint8)
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_alphas_{step}.png", alphas
+            )
+
+            # luzhan: write intrinsics
+            albedo = intrinsics[..., :3]    # (1, H, W, 3)
+            roughness =  intrinsics[..., 3:4].repeat(1, 1, 1, 3)   # (1, H, W, 3)
+            metallicity = intrinsics[..., 4:].repeat(1, 1, 1, 3)   # (1, H, W, 3)
+
+            canvas = torch.cat([albedo, roughness, metallicity], dim=2).squeeze(0).cpu().numpy()
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_intrinsics_{step}.png", (canvas * 255).astype(np.uint8)
+            )
+            # TODO: add save gt intrinsics
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
@@ -909,20 +979,30 @@ class Runner:
             depths = renders[0, ..., 3:4]  # [H, W, 1]
             depths = (depths - depths.min()) / (depths.max() - depths.min())
 
+            # luzhan: take intrinsics
+            albedos = renders[0, ..., 3:6]
+            roughness =  renders[0, ..., 6:7].repeat(1, 1, 3)
+            metallicity = renders[0, ..., 7:8].repeat(1, 1, 3)
+
             surf_normals = (surf_normals - surf_normals.min()) / (
                 surf_normals.max() - surf_normals.min()
             )
 
             # write images
+            # canvas = torch.cat(
+            #     [colors, depths.repeat(1, 1, 3)], dim=0 if width > height else 1
+            # )
+
+            # luzhan: write images, including colors, depths, normals, albedo, roughness, metallicity
             canvas = torch.cat(
-                [colors, depths.repeat(1, 1, 3)], dim=0 if width > height else 1
+                [colors, depths.repeat(1, 1, 3), surf_normals, albedos, roughness, metallicity], dim=1
             )
+
             canvas = (canvas.cpu().numpy() * 255).astype(np.uint8)
             canvas_all.append(canvas)
 
         # save to video
-        # video_dir = f"{cfg.result_dir}/videos"
-        video_dir = os.path.join(cfg.result_dir, "videos")
+        video_dir = f"{cfg.result_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
         writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
         for canvas in canvas_all:
