@@ -165,9 +165,9 @@ class Config:
 
     # luzhan: intrinsics loss and direct normal loss
     intrinsics_loss: bool = False
-    intrinsics_lambda: float = 1e-1
+    intrinsics_lambda: float = 5e-1
     direct_normal_loss: bool = False
-    direct_normal_lambda: float = 1e-2
+    direct_normal_lambda: float = 1e-1
 
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
@@ -676,7 +676,7 @@ class Runner:
                 loss += intrinsics_loss * cfg.intrinsics_lambda
             
             if cfg.direct_normal_loss:
-                direct_normal_loss = F.l1_loss(normals, normals_gt)
+                direct_normal_loss = (1 - (normals * normals_gt).sum(dim=0).mean()) / 2       
                 loss += direct_normal_loss * cfg.direct_normal_lambda
 
             loss.backward()
