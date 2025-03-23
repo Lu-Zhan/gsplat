@@ -13,7 +13,9 @@ import torch.nn.functional as F
 import tqdm
 import tyro
 import viser
-from datasets.colmap import Dataset, Parser
+# from datasets.colmap import Dataset, Parser
+# luzhan: using colmap_with_intrinsics as dataloader
+from datasets.colmap_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
@@ -163,7 +165,7 @@ class Config:
 
     # luzhan: intrinsics loss and direct normal loss
     intrinsics_loss: bool = False
-    intrinsics_lambda: float = 1e-2
+    intrinsics_lambda: float = 1e-1
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-2
 
@@ -293,8 +295,13 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
+            load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
         )
-        self.valset = Dataset(self.parser, split="val")
+        self.valset = Dataset(
+            self.parser, 
+            split="val", 
+            load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
+        )
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 
@@ -903,9 +910,17 @@ class Runner:
             # luzhan: write intrinsics
             albedo = intrinsics[..., :3]    # (1, H, W, 3)
             roughness =  intrinsics[..., 3:4].repeat(1, 1, 1, 3)   # (1, H, W, 3)
-            metallicity = intrinsics[..., 4:].repeat(1, 1, 1, 3)   # (1, H, W, 3)
+            metallic = intrinsics[..., 4:].repeat(1, 1, 1, 3)   # (1, H, W, 3)
 
-            canvas = torch.cat([albedo, roughness, metallicity], dim=2).squeeze(0).cpu().numpy()
+            gt_intrinsics = data["intrinsics"]   # (1, H, W, 5)
+            gt_albedo = gt_intrinsics[..., :3]    # (1, H, W, 3)
+            gt_roughness = gt_intrinsics[..., 3:4].repeat(1, 1, 1, 3)   # (1, H, W, 3)
+            gt_metallic = gt_intrinsics[..., 4:].repeat(1, 1, 1, 3)   # (1, H, W, 3)
+
+            canvas_top = torch.cat([gt_albedo, gt_roughness, gt_metallic], dim=2).squeeze(0).cpu().numpy()
+            canvas_bottom = torch.cat([albedo, roughness, metallic], dim=2).squeeze(0).cpu().numpy()    # 
+            canvas = np.concatenate([canvas_top, canvas_bottom], axis=0)
+            
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_intrinsics_{step}.png", (canvas * 255).astype(np.uint8)
             )
