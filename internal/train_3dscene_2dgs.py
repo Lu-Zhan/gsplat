@@ -260,6 +260,63 @@ def create_splats_with_optimizers(
     return splats, optimizers
 
 
+def create_backgrpound_splats_with_optimizers(
+    # parser: Parser,
+    init_num_pts: int = 100_000,
+    radius_of_sphere: float = 10.0,
+    init_opacity: float = 1,
+    init_scale: float = 1.0,
+    sparse_grad: bool = False,
+    batch_size: int = 1,
+    device: str = "cuda",
+) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
+    # Initialize points using Fibonacci lattice on a sphere with a radius of 10 meters
+    phi = (1 + math.sqrt(5)) / 2  # golden ratio
+    indices = torch.arange(0, init_num_pts, dtype=torch.float) + 0.5
+    theta = 2 * math.pi * indices / phi
+    z = 1 - (2 * indices / init_num_pts)
+    radius = torch.sqrt(1 - z * z)
+
+    x = radius * torch.cos(theta)
+    y = radius * torch.sin(theta)
+    points = torch.stack((x, y, z), dim=-1) * radius_of_sphere  # Scale to 10m sphere
+
+    # init rgbs
+    rgbs = torch.rand((init_num_pts, 3))
+
+    # init geometry
+    N = points.shape[0]
+    # Initialize the GS size to be the average dist of the 3 nearest neighbors
+    dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
+    dist_avg = torch.sqrt(dist2_avg)
+    scales = torch.log(dist_avg * init_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
+
+    quats = torch.cat(torch.ones((N, 1)), torch.zeros((N, 3)), dim=-1) # [N, 4]
+    opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
+
+    params = [
+        # name, value, lr
+        ("means", points, 0),
+        ("scales", torch.nn.Parameter(scales), 5e-3),
+        ("quats", torch.nn.Parameter(quats), 1e-3),
+        ("opacities", opacities, 0),
+    ]
+
+    colors = torch.logit(rgbs)  # [N, 3]
+    params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
+    
+    splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
+    optimizers = {
+        name: (torch.optim.SparseAdam if sparse_grad else torch.optim.Adam)(
+            [{"params": splats[name], "lr": lr * math.sqrt(batch_size)}],
+            eps=1e-15 / math.sqrt(batch_size),
+            betas=(1 - batch_size * (1 - 0.9), 1 - batch_size * (1 - 0.999)),
+        )
+        for name, _, lr in params if name in ["scales", "quats"]
+    }
+    return splats, optimizers
+
+
 class Runner:
     """Engine for training and testing."""
 
@@ -323,6 +380,17 @@ class Runner:
         )
         print("Model initialized. Number of GS:", len(self.splats["means"]))
         self.model_type = cfg.model_type
+
+        # Background Model
+        self.splats_bg, self.optimizers_bg = create_backgrpound_splats_with_optimizers(
+            init_num_pts=cfg.init_num_pts,
+            radius_of_sphere=cfg.init_extent,
+            init_opacity=cfg.init_opa,
+            init_scale=cfg.init_scale,
+            sparse_grad=cfg.sparse_grad,
+            batch_size=cfg.batch_size,
+            device=self.device,
+        )
 
         if self.model_type == "2dgs":
             key_for_gradient = "gradient_2dgs"
