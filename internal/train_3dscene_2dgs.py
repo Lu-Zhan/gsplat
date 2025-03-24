@@ -4,10 +4,12 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
+from einops import rearrange
 
 import imageio
 import nerfview
 import numpy as np
+from pycolmap import rotation
 import torch
 import torch.nn.functional as F
 import tqdm
@@ -31,10 +33,11 @@ from utils import (
     set_random_seed,
 )
 
-
 from gsplat.cuda._wrapper import spherical_harmonics
 from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrapper
 from gsplat.strategy import DefaultStrategy
+
+from skybox_utils import create_six_c2w_from_c2w_forward, obtain_dirs_for_skybox
 
 
 @dataclass
@@ -88,6 +91,11 @@ class Config:
     init_scale: float = 1.0
     # Weight for SSIM loss
     ssim_lambda: float = 0.2
+
+    # luzhan: add Initialization for env map
+    init_num_pts_bg: int = 1_000
+    radius_of_sphere_bg: float = 100.0
+    render_with_bg: int = 1
 
     # Near plane clipping distance
     near_plane: float = 0.2
@@ -263,7 +271,7 @@ def create_splats_with_optimizers(
 def create_backgrpound_splats_with_optimizers(
     # parser: Parser,
     init_num_pts: int = 100_000,
-    radius_of_sphere: float = 10.0,
+    radius_of_sphere: float = 100.0,
     init_opacity: float = 1,
     init_scale: float = 1.0,
     sparse_grad: bool = False,
@@ -282,7 +290,7 @@ def create_backgrpound_splats_with_optimizers(
     points = torch.stack((x, y, z), dim=-1) * radius_of_sphere  # Scale to 10m sphere
 
     # init rgbs
-    rgbs = torch.rand((init_num_pts, 3))
+    rgbs = torch.zeros((init_num_pts, 3))
 
     # init geometry
     N = points.shape[0]
@@ -291,7 +299,7 @@ def create_backgrpound_splats_with_optimizers(
     dist_avg = torch.sqrt(dist2_avg)
     scales = torch.log(dist_avg * init_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
 
-    quats = torch.cat(torch.ones((N, 1)), torch.zeros((N, 3)), dim=-1) # [N, 4]
+    quats = torch.cat([torch.ones((N, 1)), torch.zeros((N, 3))], dim=-1) # [N, 4]
     opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
 
     params = [
@@ -383,9 +391,8 @@ class Runner:
 
         # Background Model
         self.splats_bg, self.optimizers_bg = create_backgrpound_splats_with_optimizers(
-            init_num_pts=cfg.init_num_pts,
-            radius_of_sphere=cfg.init_extent,
-            init_opacity=cfg.init_opa,
+            init_num_pts=cfg.init_num_pts_bg,
+            radius_of_sphere=cfg.radius_of_sphere_bg,
             init_scale=cfg.init_scale,
             sparse_grad=cfg.sparse_grad,
             batch_size=cfg.batch_size,
@@ -474,6 +481,7 @@ class Runner:
         Ks: Tensor,
         width: int,
         height: int,
+        render_with_bg: bool = False,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
@@ -506,6 +514,21 @@ class Runner:
         colors = torch.cat([colors, self.splats["intrinsics"]], dim=-1) # [N, 3+5]
 
         assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
+
+        # luzhan: add bg splats
+        if render_with_bg:
+            means_bg = self.splats_bg["means"]  # [K, 3]
+            quats_bg = self.splats_bg["quats"]  # [K, 4]
+            scales_bg = torch.exp(self.splats_bg["scales"])  # [K, 3]
+            opacities_bg = torch.sigmoid(self.splats_bg["opacities"])  # [K,]
+            colors_bg = torch.sigmoid(self.splats_bg["colors"])  # [K, 3]
+            colors_bg = torch.cat([colors_bg, torch.zeros([colors_bg.shape[0], 5]).to(colors_bg)], dim=-1)  # [K, 3+5]
+
+            means = torch.cat([means, means_bg], dim=0)
+            quats = torch.cat([quats, quats_bg], dim=0)
+            scales = torch.cat([scales, scales_bg], dim=0)
+            opacities = torch.cat([opacities, opacities_bg], dim=0)
+            colors = torch.cat([colors, colors_bg], dim=0)
 
         if self.model_type == "2dgs":
             (
@@ -562,7 +585,46 @@ class Runner:
             render_median,
             info,
         )
+    
+    # luzhan: render env at given point
+    def render_envmap(
+        self,
+        camera_camtoworlds,
+        point_xyz,
+        height=256,
+    ):
+        # prepare Ks representing the image with 90 degree field of view
+        Ks = torch.zeros((1, 3, 3)).to(camera_camtoworlds)
+        Ks[0, 0, -1] = height / 2
+        Ks[0, 1, -1] = height / 2
+        Ks[0, -1, -1] = 1
+        Ks[0, 0, 0] = height / 2
+        Ks[0, 1, 1] = height / 2
 
+        w2c = torch.linalg.inv(camera_camtoworlds)
+        w2c[:3, 3] /= 2 
+
+        # Generate 6 directions for skybox rendering
+        c2w_all = create_six_c2w_from_c2w_forward(camera_camtoworlds)
+
+        colors = self.rasterize_splats(
+            camtoworlds=c2w_all,
+            Ks=Ks.repeat(c2w_all.shape[0], 1, 1),
+            width=height,
+            height=height,
+            near_plane=0.01,
+            far_plane=self.cfg.far_plane,
+            image_ids=None,
+            render_mode="RGB",
+            distloss=False,
+            render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+        )[0][..., :3]   # [6, H, W, 3]
+
+        # Merge all directions into a skybox
+        env_map = rearrange(colors, "b h w c -> h (b w) c")
+
+        return env_map  # (h, 6h, 3)
+    
     def train(self):
         cfg = self.cfg
         device = self.device
@@ -663,6 +725,7 @@ class Runner:
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
+                render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )
 
             # luzhan: unpack intrinsics and depths from renders
@@ -880,7 +943,7 @@ class Runner:
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
             height, width = pixels.shape[1:3]
-
+            # breakpoint()
             torch.cuda.synchronize()
             tic = time.time()
             (
@@ -952,7 +1015,6 @@ class Runner:
             )
 
             # write distortions
-
             render_dist = render_distort
             dist_max = torch.max(render_dist)
             dist_min = torch.min(render_dist)
@@ -992,7 +1054,19 @@ class Runner:
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_intrinsics_{step}.png", (canvas * 255).astype(np.uint8)
             )
-            # TODO: add save gt intrinsics
+
+            # luzhan: render and write env map at current camera
+            point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
+            envmap = self.render_envmap(
+                camera_camtoworlds=camtoworlds[0],
+                point_xyz=point_xyz,
+                height=256,
+            )
+
+            envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_envmap_{step}.png", envmap
+            )
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
@@ -1117,6 +1191,8 @@ class Runner:
 
 def main(cfg: Config):
     runner = Runner(cfg)
+    # luzhan: convert render_with_bg to a boolean
+    cfg.render_with_bg = cfg.render_with_bg == 1
 
     if cfg.ckpt is not None:
         # run eval only

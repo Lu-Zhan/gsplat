@@ -7,14 +7,14 @@ do
     DATA_FACTOR=1
     echo "Running $SCENE"
 
-    # train without eval
-    CUDA_VISIBLE_DEVICES=0 python train_3dscene_2dgs.py --eval_steps -1 --disable_viewer --data_factor $DATA_FACTOR \
-        --model_type 2dgs \
-        --data_dir $SCENE_DIR/$SCENE/ \
-        --result_dir $RESULT_DIR/$SCENE/ \
-        --max_steps 30000 \
-        --intrinsics_loss \
-        --intrinsics_lambda 1
+    # # train without eval
+    # CUDA_VISIBLE_DEVICES=0 python train_3dscene_2dgs.py --eval_steps -1 --disable_viewer --data_factor $DATA_FACTOR \
+    #     --model_type 2dgs \
+    #     --data_dir $SCENE_DIR/$SCENE/ \
+    #     --result_dir $RESULT_DIR/$SCENE/ \
+    #     --max_steps 30000 \
+    #     --intrinsics_loss \
+    #     --intrinsics_lambda 1
 
     # run eval and render
     for CKPT in $RESULT_DIR/$SCENE/ckpts/*;
@@ -28,6 +28,7 @@ do
             --intrinsics_loss \
             --depth_loss \
             --normal_loss \
+            --render_with_bg 0 \
             --direct_normal_loss
     done
 done
