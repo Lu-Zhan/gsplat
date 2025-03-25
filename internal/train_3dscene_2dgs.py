@@ -178,6 +178,13 @@ class Config:
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-1
 
+    # luzhan: add surface rendering as a regularizer
+    surface_rendering_loss: bool = False
+    surface_rendering_lambda: float = 5e-1
+    irradiance_loss: bool = False
+    irradiance_lambda: float = 5e-1
+    surface_rendering_start_iter: int = 100
+
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
 
@@ -305,10 +312,10 @@ def create_backgrpound_splats_with_optimizers(
 
     params = [
         # name, value, lr
-        ("means", points, 0),
+        ("means", torch.nn.Parameter(points), 0),
         ("scales", torch.nn.Parameter(scales), 5e-3),
         ("quats", torch.nn.Parameter(quats), 1e-3),
-        ("opacities", opacities, 0),
+        ("opacities", torch.nn.Parameter(opacities), 0),
     ]
 
     colors = torch.logit(rgbs)  # [N, 3]
@@ -478,7 +485,7 @@ class Runner:
         
         self.light_model = CubemapLight(height=256)
         self.surface_renderer = SurfaceRenderer()
-
+    
     def rasterize_splats(
         self,
         camtoworlds: Tensor,
@@ -515,7 +522,8 @@ class Runner:
         colors = spherical_harmonics(sh_degree, dirs[0], colors)   # [N, 3]
         # make it apple-to-apple with Inria's CUDA Backend.
         colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
-        colors = torch.cat([colors, self.splats["intrinsics"]], dim=-1) # [N, 3+5]
+        intrinsics = torch.sigmoid(self.splats["intrinsics"]) # [N, 5]
+        colors = torch.cat([colors, intrinsics], dim=-1) # [N, 3+5]
 
         assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
 
@@ -673,10 +681,13 @@ class Runner:
             
             # luzhan: load gt intrinsics and normals
             if cfg.intrinsics_loss:
-                intrinsics_gt = data["intrinsics"].to(device)
+                gt_intrinsics = data["intrinsics"].to(device)
             
             if cfg.direct_normal_loss:
-                normals_gt = data["normals"].to(device)
+                gt_normals = data["normals"].to(device)
+            
+            if cfg.irradiance_loss:
+                gt_irradiance = data["irradiance"].to(device)
 
             height, width = pixels.shape[1:3]
 
@@ -709,7 +720,7 @@ class Runner:
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
-                render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+                # render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )
 
             # luzhan: unpack intrinsics and depths from renders
@@ -718,8 +729,8 @@ class Runner:
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
                 # luzhan: formulate roughness, roughness = roughness * (rmax - rmin) + rmin from GS-IR
-                rmax, rmin = 1.0, 0.04
-                intrinsics[..., 3:4] = intrinsics[..., 3:4] * (rmax - rmin) + rmin
+                # rmax, rmin = 1.0, 0.04
+                # intrinsics[..., 3:4] = intrinsics[..., 3:4] * (rmax - rmin) + rmin
             else:
                 colors, intrinsics, depths = renders, None, None
 
@@ -790,12 +801,46 @@ class Runner:
 
             # luzhan: add more losses, including intrinsics loss, direct normal loss
             if cfg.intrinsics_loss:
-                intrinsics_loss = F.l1_loss(intrinsics, intrinsics_gt)
+                intrinsics_loss = F.l1_loss(intrinsics, gt_intrinsics)
                 loss += intrinsics_loss * cfg.intrinsics_lambda
             
             if cfg.direct_normal_loss:
-                direct_normal_loss = (1 - (normals * normals_gt).sum(dim=0).mean()) / 2       
+                direct_normal_loss = (1 - (normals * gt_normals).sum(dim=0).mean()) / 2       
                 loss += direct_normal_loss * cfg.direct_normal_lambda
+
+            if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
+                _, h, w, _ = depths.shape
+                depths_center_patch = depths[0, h // 4:-h // 4, w // 4:-w // 4]
+                distance = max(depths_center_patch.min(), depths_center_patch[h // 4, w // 4]) + 0.1
+                point_xyz = camtoworlds[0] @ torch.tensor([0, 0, distance, 1], device=device).t()
+                self.render_envmap(point_xyz[:3])
+
+                albedo = intrinsics[0, ..., :3]
+                roughness = intrinsics[0, ..., 3:4]
+                metallic = intrinsics[0, ..., 4:5]
+
+                if self.surface_renderer.camera_dirs is None:
+                    self.surface_renderer.update_params(ref_Ks=Ks, hw=[h, w])
+
+                pbr_result = self.surface_renderer.render(
+                    c2w=camtoworlds[0],
+                    normals=normals[0],   # 
+                    albedo=albedo,
+                    roughness=roughness,
+                    metallic=metallic,
+                    light_model=self.light_model,
+                )
+
+                irradiance = pbr_result["diffuse_light"]
+                colors_surf = pbr_result["render_rgb"]
+
+                if cfg.irradiance_loss:
+                    irradiance_loss = F.l1_loss(irradiance, gt_irradiance[0])
+                    loss += irradiance_loss * cfg.irradiance_lambda
+                
+                if cfg.surface_rendering_loss:
+                    surface_rendering_loss = F.l1_loss(colors_surf, pixels)
+                    loss += surface_rendering_loss * cfg.surface_rendering_lambda
 
             loss.backward()
 
@@ -829,6 +874,12 @@ class Runner:
                     self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.item(), step)
                 if cfg.direct_normal_loss:
                     self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.item(), step)
+                
+                if step > cfg.surface_rendering_start_iter:
+                    if cfg.irradiance_loss:
+                        self.writer.add_scalar("train/irradiance_loss", irradiance_loss.item(), step)
+                    if cfg.surface_rendering_loss:
+                        self.writer.add_scalar("train/surface_rendering_loss", surface_rendering_loss.item(), step)    
 
                 if cfg.tb_save_image:
                     canvas = (
@@ -867,6 +918,10 @@ class Runner:
 
             # optimize
             for optimizer in self.optimizers.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            # luzhan: optimize bg splats
+            for optimizer in self.optimizers_bg.values():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             for optimizer in self.pose_optimizers:
@@ -1216,6 +1271,7 @@ def main(cfg: Config):
     runner = Runner(cfg)
     # luzhan: convert render_with_bg to a boolean
     cfg.render_with_bg = cfg.render_with_bg == 1
+    print(f"render_with_bg: {cfg.render_with_bg}")
 
     if cfg.ckpt is not None:
         # run eval only

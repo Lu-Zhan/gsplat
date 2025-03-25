@@ -65,7 +65,7 @@ class SurfaceRenderer:
         roughness,
         metallic,
         light_model,
-    ):
+    ):  
         normal_mask = torch.ones_like(roughness).bool()
 
         view_dirs = self.get_view_dirs(c2w=c2w)
