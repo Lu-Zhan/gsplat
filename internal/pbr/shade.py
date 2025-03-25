@@ -6,7 +6,7 @@ import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
 
-from .light import CubemapLight
+# from .light import CubemapLight
 from load_image import tonemap
 
 
@@ -60,6 +60,17 @@ def linear_to_srgb(linear: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray,
         raise NotImplementedError
 
 
+def srgb_to_linear(srgb: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+    if isinstance(srgb, torch.Tensor):
+        return torch.where(
+            srgb <= 0.04045, srgb / 12.92, torch.pow((torch.clamp(srgb, 0.04045) + 0.055) / 1.055, 2.4)
+        )
+    elif isinstance(srgb, np.ndarray):
+        return np.where(srgb <= 0.04045, srgb / 12.92, np.power((np.maximum(0.04045, srgb) + 0.055) / 1.055, 2.4))
+    else:
+        raise NotImplementedError
+
+
 def _rgb_to_srgb(f: torch.Tensor) -> torch.Tensor:
     return torch.where(
         f <= 0.0031308, f * 12.92, torch.pow(torch.clamp(f, 0.0031308), 1.0 / 2.4) * 1.055 - 0.055
@@ -103,7 +114,7 @@ def get_brdf_lut() -> torch.Tensor:
 
 
 def pbr_shading(
-    light: CubemapLight,
+    light,
     normals: torch.Tensor,  # [H, W, 3]
     view_dirs: torch.Tensor,  # [H, W, 3]
     albedo: torch.Tensor,  # [H, W, 3]
@@ -150,6 +161,7 @@ def pbr_shading(
     # specular
     NoV = saturate_dot(normals, view_dirs)  # [1, H, W, 1]
     fg_uv = torch.cat((NoV, roughness), dim=-1)  # [1, H, W, 2]
+
     fg_lookup = dr.texture(
         brdf_lut,  # [1, 256, 256, 2]
         fg_uv.contiguous(),  # [1, H, W, 2]

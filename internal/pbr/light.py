@@ -1,14 +1,15 @@
-from typing import List, Optional
-
 import cv2
+import torch
 import numpy as np
 import nvdiffrast.torch as dr
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import List, Optional
+
+from load_image import tonemap, inverse_tonemap
 from .renderutils import diffuse_cubemap, specular_cubemap
 from .cubemap import create_cubemap_c2w
+from .shade import linear_to_srgb, srgb_to_linear
 
 
 def cube_to_dir(s: int, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -79,7 +80,8 @@ class CubemapLight():
         return self.Ks.to(point_xyz), create_cubemap_c2w(pos=point_xyz).to(point_xyz)
 
     def update_cubemap(self, cubemap):
-        self.cubemap = cubemap.contiguous()
+        # cubemap is ldr -> linear -> inv tonemap
+        self.cubemap = inverse_tonemap(srgb_to_linear(cubemap)).contiguous()
 
     # processing
     def get_mip(self, roughness: torch.Tensor) -> torch.Tensor:
@@ -127,18 +129,19 @@ class CubemapLight():
         reflvec = torch.stack(
             (sintheta * sinphi, costheta, -sintheta * cosphi), dim=-1
         )  # [H, W, 3]
+
         color = dr.texture(
             self.cubemap[None, ...],
             reflvec[None, ...].contiguous(),
             filter_mode="linear",
             boundary_mode="cube",
-        )[
-            0
-        ]  # [H, W, 3]
+        )[0]  # [H, W, 3]
+
         if return_img:
             return color    # [H, W, 3]
         else:
-            cv2.imwrite(filename, color.clamp(min=0.0).cpu().numpy()[..., ::-1])
+            color = linear_to_srgb(tonemap(color))
+            cv2.imwrite(filename, color.clamp(min=0).cpu().numpy()[..., ::-1])
 
 
 if __name__ == "__main__":

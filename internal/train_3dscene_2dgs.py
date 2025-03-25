@@ -38,6 +38,7 @@ from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrappe
 from gsplat.strategy import DefaultStrategy
 
 from pbr.light import CubemapLight
+from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
 
 
 @dataclass
@@ -476,6 +477,7 @@ class Runner:
             )
         
         self.light_model = CubemapLight(height=256)
+        self.surface_renderer = SurfaceRenderer()
 
     def rasterize_splats(
         self,
@@ -979,6 +981,7 @@ class Runner:
             )
 
             # write normals
+            normals_tensor = normals.clone()
             normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
             normals_output = (normals * 255).astype(np.uint8)
             imageio.imwrite(
@@ -1044,6 +1047,7 @@ class Runner:
             point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
             self.render_envmap(point_xyz=point_xyz)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
+            cubemap = hdr_to_ldr(cubemap)
 
             cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
             imageio.imwrite(
@@ -1051,9 +1055,40 @@ class Runner:
             )
 
             envmap = self.light_model.export_envmap(return_img=True)
+            envmap = hdr_to_ldr(envmap)
             envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_envmap_{step}.png", envmap
+            )
+
+            # luzhan: surface renderer
+            if self.surface_renderer.camera_dirs is None:
+                self.surface_renderer.update_params(Ks, hw=(height, width))
+
+            pbr_result = self.surface_renderer.render(
+                c2w=camtoworlds[0],
+                normals=normals_tensor[0],
+                albedo=albedo[0],
+                roughness=roughness[0, ..., :1],
+                metallic=metallic[0, ..., :1],
+                light_model=self.light_model,
+            )
+            
+            diffuse_image = pbr_result["diffuse_rgb"]
+            specular_image = pbr_result["specular_rgb"]
+            rendered_image = pbr_result["render_rgb"]
+
+            canvas = torch.cat([diffuse_image, specular_image, rendered_image, colors[0]], dim=1).cpu().numpy()
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_surface_renderer_{step}.png", (canvas * 255).astype(np.uint8)
+            )
+
+            irradiace = pbr_result["diffuse_light"]
+            gt_irradiance = data["irradiance"].to(irradiace)
+
+            canvas = torch.cat([gt_irradiance[0], irradiace], dim=1).cpu().numpy()
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_irradiance_{step}.png", (canvas * 255).astype(np.uint8)
             )
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]

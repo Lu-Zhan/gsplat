@@ -17,7 +17,7 @@ do
     #     --intrinsics_lambda 1
 
     # run eval and render
-    for CKPT in $RESULT_DIR/$SCENE/ckpts/*;
+    for CKPT in $RESULT_DIR/$SCENE/ckpts/*29999*;
     do
         CUDA_VISIBLE_DEVICES=0 python train_3dscene_2dgs.py --disable_viewer --data_factor $DATA_FACTOR \
             --model_type 2dgs \
