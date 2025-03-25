@@ -133,7 +133,7 @@ def exp_tonemap(hdr_image):
     return convert_Yxy_2_rgb(image_Yxy)
 
 
-def tonemap(color, gamma=2.2):
+def tonemap(color):
 	# aces tone mapping
 	A = 2.51
 	B = 0.03
@@ -143,27 +143,16 @@ def tonemap(color, gamma=2.2):
 
 	# color: [B, 3]
 	color = (color * (A * color + B)) / (color * (C * color + D) + E)
-	return torch.clamp(color, 0, 1) ** (1 / gamma)
+	return torch.clamp(color, 0, 1)
 
 
-def inverse_tonemap(color, gamma=2.2):
-    # First invert the gamma correction
-    color = torch.clamp(color, 0, 1) ** gamma
-    
+def inverse_tonemap(color):
     # Constants from tonemap function
     A = 2.51
     B = 0.03
     C = 2.43
     D = 0.59
     E = 0.14
-
-    # y = (x * (Ax + B)) / (x * (Cx + D) + E)
-    # y * (x * (Cx + D) + E) = x * (Ax + B)
-    # Cx2y + Dxy + Ey = Ax2 + Bx
-    # 0 = Ax2 + Bx - Cx2y - Dxy
-    # (A - Cy)x^2 + (B - Dy)x - Ey = 0
-    # to solve for x, assume ax^2 + bx + c = 0, where a = A - Cy, b = B - Dy, c = -Ey
-    # x = (-b +- sqrt(b^2 - 4ac)) / 2a
 
     a = A - C * color
     b = B - D * color

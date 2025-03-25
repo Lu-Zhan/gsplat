@@ -25,6 +25,30 @@ def look_at(eye: torch.Tensor, center: torch.Tensor, up: torch.Tensor) -> torch.
     return c2w
 
 
+def create_cubemap_c2w(pos):
+    directions_and_ups_local = [
+        (torch.tensor([ 1.0,  0.0,  0.0]), torch.tensor([0.0, 1.0,  0.0])),  # +X
+        (torch.tensor([-1.0,  0.0,  0.0]), torch.tensor([0.0, 1.0,  0.0])),  # -X
+        (torch.tensor([ 0.0,  1.0,  0.0]), torch.tensor([0.0, 0.0, -1.0])),  # +Y
+        (torch.tensor([ 0.0, -1.0,  0.0]), torch.tensor([0.0, 0.0,  1.0])),  # -Y
+        (torch.tensor([ 0.0,  0.0,  1.0]), torch.tensor([0.0, 1.0,  0.0])),  # +Z
+        (torch.tensor([ 0.0,  0.0, -1.0]), torch.tensor([0.0, 1.0,  0.0])),  # -Z
+    ]
+    
+    # 4. 对每个方向，用 R_fwd 把局部空间的 direction / up 转到世界空间
+    c2w_list = []
+    for (dir_local, up_local) in directions_and_ups_local:
+        dir_world = dir_local.to(pos)  # [3]
+        up_world  = up_local.to(pos)  # [3]
+        
+        center = pos + dir_world       # “朝这个方向看”的目标点
+        c2w = look_at(pos, center, up_world)
+        c2w_list.append(c2w)
+    
+    # 拼到一起: [6,4,4]
+    return torch.stack(c2w_list, dim=0)
+
+
 def create_six_c2w_from_c2w_forward(c2w_forward: torch.Tensor) -> torch.Tensor:
     """
     输入:

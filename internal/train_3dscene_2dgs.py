@@ -37,7 +37,7 @@ from gsplat.cuda._wrapper import spherical_harmonics
 from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrapper
 from gsplat.strategy import DefaultStrategy
 
-from skybox_utils import create_six_c2w_from_c2w_forward, obtain_dirs_for_skybox
+from pbr.light import CubemapLight
 
 
 @dataclass
@@ -474,6 +474,8 @@ class Runner:
                 render_fn=self._viewer_render_fn,
                 mode="training",
             )
+        
+        self.light_model = CubemapLight(height=256)
 
     def rasterize_splats(
         self,
@@ -587,31 +589,14 @@ class Runner:
         )
     
     # luzhan: render env at given point
-    def render_envmap(
-        self,
-        camera_camtoworlds,
-        point_xyz,
-        height=256,
-    ):
-        # prepare Ks representing the image with 90 degree field of view
-        Ks = torch.zeros((1, 3, 3)).to(camera_camtoworlds)
-        Ks[0, 0, -1] = height / 2
-        Ks[0, 1, -1] = height / 2
-        Ks[0, -1, -1] = 1
-        Ks[0, 0, 0] = height / 2
-        Ks[0, 1, 1] = height / 2
-
-        w2c = torch.linalg.inv(camera_camtoworlds)
-        w2c[:3, 3] /= 2 
-
-        # Generate 6 directions for skybox rendering
-        c2w_all = create_six_c2w_from_c2w_forward(camera_camtoworlds)
+    def render_envmap(self, point_xyz):
+        Ks, c2w_cubemap = self.light_model.get_Ks_c2w(point_xyz)
 
         colors = self.rasterize_splats(
-            camtoworlds=c2w_all,
-            Ks=Ks.repeat(c2w_all.shape[0], 1, 1),
-            width=height,
-            height=height,
+            camtoworlds=c2w_cubemap,
+            Ks=Ks,
+            width=self.light_model.height,
+            height=self.light_model.height,
             near_plane=0.01,
             far_plane=self.cfg.far_plane,
             image_ids=None,
@@ -620,10 +605,7 @@ class Runner:
             render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
         )[0][..., :3]   # [6, H, W, 3]
 
-        # Merge all directions into a skybox
-        env_map = rearrange(colors, "b h w c -> h (b w) c")
-
-        return env_map  # (h, 6h, 3)
+        self.light_model.update_cubemap(colors)
     
     def train(self):
         cfg = self.cfg
@@ -733,6 +715,9 @@ class Runner:
                 colors, intrinsics, depths = renders[..., 0:3], None, renders[..., 3:4]
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
+                # luzhan: formulate roughness, roughness = roughness * (rmax - rmin) + rmin from GS-IR
+                rmax, rmin = 1.0, 0.04
+                intrinsics[..., 3:4] = intrinsics[..., 3:4] * (rmax - rmin) + rmin
             else:
                 colors, intrinsics, depths = renders, None, None
 
@@ -1057,12 +1042,15 @@ class Runner:
 
             # luzhan: render and write env map at current camera
             point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
-            envmap = self.render_envmap(
-                camera_camtoworlds=camtoworlds[0],
-                point_xyz=point_xyz,
-                height=256,
+            self.render_envmap(point_xyz=point_xyz)
+            cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
+
+            cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
+            imageio.imwrite(
+                f"{self.render_dir}/val_{i:04d}_cubemap_{step}.png", cubemap
             )
 
+            envmap = self.light_model.export_envmap(return_img=True)
             envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_envmap_{step}.png", envmap
