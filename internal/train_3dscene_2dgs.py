@@ -996,6 +996,11 @@ class Runner:
         )
         ellipse_time = 0
         metrics = {"psnr": [], "ssim": [], "lpips": []}
+
+        # luzhan: update render_dir
+        self.render_dir = f"{self.render_dir}/step_{step:05d}"
+        os.makedirs(self.render_dir, exist_ok=True)
+        
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
@@ -1033,9 +1038,9 @@ class Runner:
 
             # write images
             canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
-            )
+            save_path = f"{self.render_dir}/images/val_{i:04d}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # write median depths
             render_median = (render_median - render_median.min()) / (
@@ -1046,18 +1051,17 @@ class Runner:
                 render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
             )
 
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_median_depth_{step}.png",
-                (render_median * 255).astype(np.uint8),
-            )
+            save_path = f"{self.render_dir}/depths/val_{i:04d}_median_depth_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, (render_median * 255).astype(np.uint8))
 
             # write normals
             normals_tensor = normals.clone()
             normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
             normals_output = (normals * 255).astype(np.uint8)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_normal_{step}.png", normals_output
-            )
+            save_path = f"{self.render_dir}/normals/val_{i:04d}_normal_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, normals_output)
 
             # write normals from depth
             normals_from_depth *= alphas.squeeze(0).detach()
@@ -1068,10 +1072,9 @@ class Runner:
             normals_from_depth_output = (normals_from_depth * 255).astype(np.uint8)
             if len(normals_from_depth_output.shape) == 4:
                 normals_from_depth_output = normals_from_depth_output.squeeze(0)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_normals_from_depth_{step}.png",
-                normals_from_depth_output,
-            )
+            save_path = f"{self.render_dir}/normals_from_depth/val_{i:04d}_normals_from_depth_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, normals_from_depth_output)
 
             # write distortions
             render_dist = render_distort
@@ -1084,17 +1087,17 @@ class Runner:
                 .numpy()
                 .astype(np.uint8)
             )
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_distortions_{step}.png", render_dist
-            )
-
+            save_path = f"{self.render_dir}/distortions/val_{i:04d}_distortions_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, render_dist)
+  
             # write alphas
             alphas = alphas.repeat(1, 1, 1, 3).squeeze(0).detach().cpu().numpy()
             alphas = (alphas - np.min(alphas)) / (np.max(alphas) - np.min(alphas))
             alphas = (alphas * 255).astype(np.uint8)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_alphas_{step}.png", alphas
-            )
+            save_path = f"{self.render_dir}/alphas/val_{i:04d}_alphas_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, alphas)
 
             # luzhan: write intrinsics
             albedo = intrinsics[..., :3]    # (1, H, W, 3)
@@ -1109,28 +1112,26 @@ class Runner:
             canvas_top = torch.cat([gt_albedo, gt_roughness, gt_metallic], dim=2).squeeze(0).cpu().numpy()
             canvas_bottom = torch.cat([albedo, roughness, metallic], dim=2).squeeze(0).cpu().numpy()    # 
             canvas = np.concatenate([canvas_top, canvas_bottom], axis=0)
-            
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_intrinsics_{step}.png", (canvas * 255).astype(np.uint8)
-            )
+            save_path = f"{self.render_dir}/intrinsics/val_{i:04d}_intrinsics_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # luzhan: render and write env map at current camera
             point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
             self.render_envmap(point_xyz=point_xyz)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
             cubemap = hdr_to_ldr(cubemap)
-
             cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_cubemap_{step}.png", cubemap
-            )
+            save_path = f"{self.render_dir}/cubemap/val_{i:04d}_cubemap_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, cubemap)
 
             envmap = self.light_model.export_envmap(return_img=True)
             envmap = hdr_to_ldr(envmap)
             envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_envmap_{step}.png", envmap
-            )
+            save_path = f"{self.render_dir}/envmap/val_{i:04d}_envmap_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, envmap)
 
             # luzhan: surface renderer
             if self.surface_renderer.camera_dirs is None:
@@ -1150,17 +1151,17 @@ class Runner:
             rendered_image = pbr_result["render_rgb"]
 
             canvas = torch.cat([diffuse_image, specular_image, rendered_image, colors[0]], dim=1).cpu().numpy()
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_surface_renderer_{step}.png", (canvas * 255).astype(np.uint8)
-            )
+            save_path = f"{self.render_dir}/surface_renderer/val_{i:04d}_surface_renderer_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             irradiace = pbr_result["diffuse_light"]
             gt_irradiance = data["irradiance"].to(irradiace)
 
             canvas = torch.cat([gt_irradiance[0], irradiace], dim=1).cpu().numpy()
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_irradiance_{step}.png", (canvas * 255).astype(np.uint8)
-            )
+            save_path = f"{self.render_dir}/irradiance/val_{i:04d}_irradiance_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
