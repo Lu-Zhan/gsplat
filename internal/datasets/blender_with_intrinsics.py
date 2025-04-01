@@ -56,7 +56,7 @@ def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
 
 
 class Parser:
-    """COLMAP parser."""
+    """Blender parser."""
 
     def __init__(
         self,
@@ -70,17 +70,17 @@ class Parser:
         self.normalize = normalize
         self.test_every = test_every
 
-        colmap_dir = os.path.join(data_dir, "sparse/0/")
-        if not os.path.exists(colmap_dir):
-            colmap_dir = os.path.join(data_dir, "sparse")
-        assert os.path.exists(
-            colmap_dir
-        ), f"COLMAP directory {colmap_dir} does not exist."
+        # colmap_dir = os.path.join(data_dir, "sparse/0/")
+        # if not os.path.exists(colmap_dir):
+        #     colmap_dir = os.path.join(data_dir, "sparse")
+        # assert os.path.exists(
+        #     colmap_dir
+        # ), f"COLMAP directory {colmap_dir} does not exist."
 
-        manager = SceneManager(colmap_dir)
-        manager.load_cameras()
-        manager.load_images()
-        manager.load_points3D()
+        # manager = SceneManager(colmap_dir)
+        # manager.load_cameras()
+        # manager.load_images()
+        # manager.load_points3D()
 
         # Extract extrinsic matrices in world-to-camera format.
         imdata = manager.images
@@ -91,6 +91,7 @@ class Parser:
         imsize_dict = dict()  # width, height
         mask_dict = dict()
         bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
+
         for k in imdata:
             im = imdata[k]
             rot = im.R()
@@ -109,14 +110,14 @@ class Parser:
             K[:2, :] /= factor
             Ks_dict[camera_id] = K
 
-            # Get distortion parameters.
-            # type_ = cam.camera_type
-            type_ = 0
-            print('Assume camera type is SIMPLE_PINHOLE')
+            params = np.empty(0, dtype=np.float32)
+            camtype = "perspective"
 
-            if type_ == 0 or type_ == "SIMPLE_PINHOLE":
-                params = np.empty(0, dtype=np.float32)
-                camtype = "perspective"
+            # # Get distortion parameters.
+            # type_ = cam.camera_type
+            # if type_ == 0 or type_ == "SIMPLE_PINHOLE":
+            #     params = np.empty(0, dtype=np.float32)
+            #     camtype = "perspective"
             # elif type_ == 1 or type_ == "PINHOLE":
             #     params = np.empty(0, dtype=np.float32)
             #     camtype = "perspective"
@@ -139,14 +140,13 @@ class Parser:
             params_dict[camera_id] = params
             imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
             mask_dict[camera_id] = None
-        print(
-            f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
-        )
+
+        print(f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras.")
 
         if len(imdata) == 0:
-            raise ValueError("No images found in COLMAP.")
-        if not (type_ == 0 or type_ == 1):
-            print("Warning: COLMAP Camera is not PINHOLE. Images have distortion.")
+            raise ValueError("No images found in transforms.")
+        # if not (type_ == 0 or type_ == 1):
+        #     print("Warning: COLMAP Camera is not PINHOLE. Images have distortion.")
 
         w2c_mats = np.stack(w2c_mats, axis=0)
 
@@ -185,6 +185,7 @@ class Parser:
             image_dir_suffix = f"_{factor}"
         else:
             image_dir_suffix = ""
+            
         colmap_image_dir = os.path.join(data_dir, "images")
         image_dir = os.path.join(data_dir, "images" + image_dir_suffix)
         for d in [image_dir, colmap_image_dir]:
