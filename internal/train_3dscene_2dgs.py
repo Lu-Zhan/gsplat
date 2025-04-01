@@ -17,7 +17,8 @@ import tyro
 import viser
 # from datasets.colmap import Dataset, Parser
 # luzhan: using colmap_with_intrinsics as dataloader
-from datasets.colmap_with_intrinsics import Dataset, Parser
+# from datasets.colmap_with_intrinsics import Dataset, Parser
+from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
@@ -76,8 +77,8 @@ class Config:
     # Steps to save the model
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
 
-    # Initialization strategy
-    init_type: str = "sfm"
+    # luzhan: Initialization strategy using random
+    init_type: str = "random"
     # Initial number of GSs. Ignored if using sfm
     init_num_pts: int = 100_000
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
@@ -1117,7 +1118,8 @@ class Runner:
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # luzhan: render and write env map at current camera
-            point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
+            # point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
+            point_xyz = torch.zeros(3).to(camtoworlds)
             self.render_envmap(point_xyz=point_xyz)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
             cubemap = hdr_to_ldr(cubemap)
