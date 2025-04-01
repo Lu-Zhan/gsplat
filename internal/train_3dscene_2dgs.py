@@ -157,7 +157,7 @@ class Config:
     # Enable depth loss. (experimental)
     depth_loss: bool = True
     # Weight for depth loss
-    depth_lambda: float = 1e-2
+    depth_lambda: float = 5e-1
 
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
@@ -650,7 +650,7 @@ class Runner:
             self.trainset,
             batch_size=cfg.batch_size,
             shuffle=True,
-            num_workers=4,
+            num_workers=27,
             persistent_workers=True,
             pin_memory=True,
         )
@@ -789,12 +789,10 @@ class Runner:
 
                 # luzhan: new depth loss
                 gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
-                disp_gt = 1.0 / gt_depths
                 depths = torch.clamp(depths, min=0.)
                 depths = (depths - depths.min()) / (depths.max() - depths.min())
-                disp = 1.0 / depths
 
-                depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
+                depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
 
             if cfg.normal_loss:
