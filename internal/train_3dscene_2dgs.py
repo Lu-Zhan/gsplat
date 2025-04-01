@@ -155,7 +155,7 @@ class Config:
     app_opt_reg: float = 1e-6
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = False
+    depth_loss: bool = True
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
@@ -375,7 +375,8 @@ class Runner:
         )
         self.valset = Dataset(
             self.parser, 
-            split="val", 
+            split="val",
+            load_depths=cfg.depth_loss,
             load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
         )
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
@@ -495,7 +496,7 @@ class Runner:
         Ks: Tensor,
         width: int,
         height: int,
-        render_with_bg: bool = True,
+        render_with_bg: bool = False,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
@@ -679,8 +680,10 @@ class Runner:
             )
             image_ids = data["image_id"].to(device)
             if cfg.depth_loss:
-                points = data["points"].to(device)  # [1, M, 2]
-                depths_gt = data["depths"].to(device)  # [1, M]
+                # points = data["points"].to(device)  # [1, M, 2]
+                # depths_gt = data["depths"].to(device)  # [1, M]
+
+                gt_depths = data["depths"].to(device)   # [1, H, W, 1]
             
             # luzhan: load gt intrinsics and normals
             if cfg.intrinsics_loss:
@@ -703,6 +706,11 @@ class Runner:
             # sh schedule
             sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
+            # luzhan: use bg splats only enabling surface rendering
+            render_with_bg = self.cfg.render_with_bg \
+                and (cfg.irradiance_loss or cfg.surface_rendering_loss) \
+                and (step > cfg.surface_rendering_start_iter)
+
             # forward
             (
                 renders,
@@ -723,7 +731,7 @@ class Runner:
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
-                render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+                render_with_bg=render_with_bg, # whether to render with bg splats
             )
 
             # luzhan: unpack intrinsics and depths from renders
@@ -760,22 +768,32 @@ class Runner:
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:
-                # query depths from depth map
-                points = torch.stack(
-                    [
-                        points[:, :, 0] / (width - 1) * 2 - 1,
-                        points[:, :, 1] / (height - 1) * 2 - 1,
-                    ],
-                    dim=-1,
-                )  # normalize to [-1, 1]
-                grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                depths = F.grid_sample(
-                    depths.permute(0, 3, 1, 2), grid, align_corners=True
-                )  # [1, 1, M, 1]
-                depths = depths.squeeze(3).squeeze(1)  # [1, M]
-                # calculate loss in disparity space
-                disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                disp_gt = 1.0 / depths_gt  # [1, M]
+                # # query depths from depth map
+                # points = torch.stack(
+                #     [
+                #         points[:, :, 0] / (width - 1) * 2 - 1,
+                #         points[:, :, 1] / (height - 1) * 2 - 1,
+                #     ],
+                #     dim=-1,
+                # )  # normalize to [-1, 1]
+                # grid = points.unsqueeze(2)  # [1, M, 1, 2]
+                # depths = F.grid_sample(
+                #     depths.permute(0, 3, 1, 2), grid, align_corners=True
+                # )  # [1, 1, M, 1]
+                # depths = depths.squeeze(3).squeeze(1)  # [1, M]
+                # # calculate loss in disparity space
+                # disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
+                # disp_gt = 1.0 / depths_gt  # [1, M]
+                # depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
+                # loss += depthloss * cfg.depth_lambda
+
+                # luzhan: new depth loss
+                gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+                disp_gt = 1.0 / gt_depths
+                depths = torch.clamp(depths, min=0.)
+                depths = (depths - depths.min()) / (depths.max() - depths.min())
+                disp = 1.0 / depths
+
                 depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
 
@@ -1044,17 +1062,18 @@ class Runner:
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # write median depths
-            render_median = (render_median - render_median.min()) / (
-                render_median.max() - render_median.min()
-            )
-            # render_median = render_median.detach().cpu().squeeze(0).unsqueeze(-1).repeat(1, 1, 3).numpy()
-            render_median = (
-                render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
-            )
+            render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
+            render_median = render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+
+            gt_depths = data["depths"]
+            gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+            gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+
+            canvas = np.concatenate([gt_depths, render_median], axis=1)
 
             save_path = f"{self.render_dir}/depths/val_{i:04d}_median_depth_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            imageio.imwrite(save_path, (render_median * 255).astype(np.uint8))
+            imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # write normals
             normals_tensor = normals.clone()

@@ -143,7 +143,7 @@ def read_exr(filename, channel=3):
 			c32f = np.fromstring(src.channel(c, pixel_type), dtype=np.float32).reshape(size[::-1])
 			rgb32f = c32f if i == 0 else np.dstack((rgb32f, c32f))
 	elif channel == 1:
-		rgb32f = np.fromstring(src.channel('A', pixel_type), dtype=np.float32).reshape(size[::-1]).unsqueeze(2)
+		rgb32f = np.fromstring(src.channel('Z', pixel_type), dtype=np.float32).reshape(size[::-1])
 
 	return rgb32f
 
