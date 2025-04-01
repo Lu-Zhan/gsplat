@@ -298,7 +298,7 @@ def create_backgrpound_splats_with_optimizers(
     points = torch.stack((x, y, z), dim=-1) * radius_of_sphere  # Scale to 10m sphere
 
     # init rgbs
-    rgbs = torch.zeros((init_num_pts, 3))
+    rgbs = torch.ones((init_num_pts, 3)) * 0.01
 
     # init geometry
     N = points.shape[0]
@@ -312,10 +312,12 @@ def create_backgrpound_splats_with_optimizers(
 
     params = [
         # name, value, lr
-        ("means", torch.nn.Parameter(points), 0),
         ("scales", torch.nn.Parameter(scales), 5e-3),
         ("quats", torch.nn.Parameter(quats), 1e-3),
-        ("opacities", torch.nn.Parameter(opacities), 0),
+        ("means", points, 0),
+        ("opacities", opacities, 0),
+        # ("means", torch.nn.Parameter(points), 0),
+        # ("opacities", torch.nn.Parameter(opacities), 0),
     ]
 
     colors = torch.logit(rgbs)  # [N, 3]
@@ -492,7 +494,7 @@ class Runner:
         Ks: Tensor,
         width: int,
         height: int,
-        render_with_bg: bool = False,
+        render_with_bg: bool = True,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]
@@ -720,7 +722,7 @@ class Runner:
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
-                # render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+                render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )
 
             # luzhan: unpack intrinsics and depths from renders
@@ -891,6 +893,20 @@ class Runner:
                     canvas = canvas.reshape(-1, *canvas.shape[2:])
                     self.writer.add_image("train/render", canvas, step)
                 self.writer.flush()
+
+            
+            # luzhan: use only the front splats for densification
+            if self.cfg.render_with_bg:
+                num_gs_front = self.splats["means"].shape[0]
+                grad_info = info["gradient_2dgs"].grad.clone()[:, :num_gs_front]
+
+                for k in [
+                    'radii', 'means2d', 'depths', 'ray_transforms', 
+                    'opacities', 'normals', 'tiles_per_gauss', 'gradient_2dgs',
+                ]:
+                    info[k] = info[k][:, :num_gs_front]
+                
+                info['gradient_2dgs'].grad = grad_info
 
             self.strategy.step_post_backward(
                 params=self.splats,

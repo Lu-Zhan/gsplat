@@ -112,8 +112,6 @@ class Parser:
             # Get distortion parameters.
             # type_ = cam.camera_type
             type_ = 0
-            print('Assume camera type is SIMPLE_PINHOLE')
-
             if type_ == 0 or type_ == "SIMPLE_PINHOLE":
                 params = np.empty(0, dtype=np.float32)
                 camtype = "perspective"
@@ -142,6 +140,7 @@ class Parser:
         print(
             f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
         )
+        print('Assume camera type is SIMPLE_PINHOLE')
 
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
