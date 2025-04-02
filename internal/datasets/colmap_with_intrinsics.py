@@ -416,7 +416,7 @@ class Dataset:
             irradiance = read_exr(irrdiance_path)
 
             irradiance = torch.from_numpy(irradiance).float()
-            normal = torch.from_numpy(normal).float()
+            normal = torch.from_numpy(normal).float() * 2.0 - 1.0
             intrinsics = torch.cat(
                 [torch.from_numpy(albedo), torch.from_numpy(roughness), torch.from_numpy(metallic)], dim=-1
             ).float()
@@ -442,27 +442,35 @@ class Dataset:
             data['intrinsics'] = intrinsics   
 
         if self.load_depths:
-            # projected points to image plane to get depths
-            worldtocams = np.linalg.inv(camtoworlds)
-            image_name = self.parser.image_names[index]
-            point_indices = self.parser.point_indices[image_name]
-            points_world = self.parser.points[point_indices]
-            points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
-            points_proj = (K @ points_cam.T).T
-            points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
-            depths = points_cam[:, 2]  # (M,)
-            # filter out points outside the image
-            selector = (
-                (points[:, 0] >= 0)
-                & (points[:, 0] < image.shape[1])
-                & (points[:, 1] >= 0)
-                & (points[:, 1] < image.shape[0])
-                & (depths > 0)
-            )
-            points = points[selector]
-            depths = depths[selector]
-            data["points"] = torch.from_numpy(points).float()
-            data["depths"] = torch.from_numpy(depths).float()
+            # # projected points to image plane to get depths
+            # worldtocams = np.linalg.inv(camtoworlds)
+            # image_name = self.parser.image_names[index]
+            # point_indices = self.parser.point_indices[image_name]
+            # points_world = self.parser.points[point_indices]
+            # points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
+            # points_proj = (K @ points_cam.T).T
+            # points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
+            # depths = points_cam[:, 2]  # (M,)
+            # # filter out points outside the image
+            # selector = (
+            #     (points[:, 0] >= 0)
+            #     & (points[:, 0] < image.shape[1])
+            #     & (points[:, 1] >= 0)
+            #     & (points[:, 1] < image.shape[0])
+            #     & (depths > 0)
+            # )
+            # points = points[selector]
+            # depths = depths[selector]
+            # data["points"] = torch.from_numpy(points).float()
+            # data["depths"] = torch.from_numpy(depths).float()
+
+            # further load depth maps
+            depthmap_path = self.parser.image_paths[index].replace('images', 'depths').replace('.png', '.exr')
+            depthmaps = read_exr(depthmap_path, channel=1)
+            depthmaps = torch.from_numpy(depthmaps).float()[..., None]
+
+            data['depths'] = depthmaps
+
 
         return data
 

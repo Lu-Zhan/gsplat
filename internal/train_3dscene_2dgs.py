@@ -17,8 +17,8 @@ import tyro
 import viser
 # from datasets.colmap import Dataset, Parser
 # luzhan: using colmap_with_intrinsics as dataloader
-# from datasets.colmap_with_intrinsics import Dataset, Parser
-from datasets.blender_with_intrinsics import Dataset, Parser
+from datasets.colmap_with_intrinsics import Dataset, Parser
+# from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
@@ -40,6 +40,8 @@ from gsplat.strategy import DefaultStrategy
 
 from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
+
+from geo_utils import transform_normals_to_image_coord
 
 
 @dataclass
@@ -78,7 +80,7 @@ class Config:
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
 
     # luzhan: Initialization strategy using random
-    init_type: str = "random"
+    init_type: str = "sfm"
     # Initial number of GSs. Ignored if using sfm
     init_num_pts: int = 100_000
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
@@ -157,7 +159,7 @@ class Config:
     # Enable depth loss. (experimental)
     depth_loss: bool = True
     # Weight for depth loss
-    depth_lambda: float = 5e-1
+    depth_lambda: float = 1e-2
 
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
@@ -1044,6 +1046,7 @@ class Runner:
                 far_plane=cfg.far_plane,
                 render_mode="RGB+ED",
             )  # [1, H, W, 3]
+            excepted_depths = colors[..., -1:]
             colors = torch.clamp(colors, 0.0, 1.0)
 
             # luzhan: take intrinsics
@@ -1059,40 +1062,50 @@ class Runner:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
-            # write median depths
-            render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
-            render_median = render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+            # write depths
+            # render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
+            # render_median = render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
             gt_depths = data["depths"]
             gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
             gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
-            canvas = np.concatenate([gt_depths, render_median], axis=1)
+            excepted_depths = torch.where(excepted_depths > 0.0, 1 / excepted_depths, torch.zeros_like(excepted_depths))
+            excepted_depths = (excepted_depths - excepted_depths.min()) / (excepted_depths.max() - excepted_depths.min())
+            excepted_depths = excepted_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
-            save_path = f"{self.render_dir}/depths/val_{i:04d}_median_depth_{step}.png"
+            # align the median of depths
+            gt_median = np.median(gt_depths)
+            excepted_median = np.median(excepted_depths)
+            excepted_depths = excepted_depths * gt_median / excepted_median
+
+            canvas = np.concatenate([gt_depths, excepted_depths], axis=1)
+
+            save_path = f"{self.render_dir}/depths/val_{i:04d}_depth_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # write normals
             normals_tensor = normals.clone()
+            normals = transform_normals_to_image_coord(normals, camtoworlds)
+            normals = torch.nn.functional.normalize(normals, dim=-1)
             normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
-            normals_output = (normals * 255).astype(np.uint8)
-            save_path = f"{self.render_dir}/normals/val_{i:04d}_normal_{step}.png"
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            imageio.imwrite(save_path, normals_output)
 
             # write normals from depth
             normals_from_depth *= alphas.squeeze(0).detach()
-            normals_from_depth = (normals_from_depth * 0.5 + 0.5).cpu().numpy()
-            normals_from_depth = (normals_from_depth - np.min(normals_from_depth)) / (
-                np.max(normals_from_depth) - np.min(normals_from_depth)
-            )
-            normals_from_depth_output = (normals_from_depth * 255).astype(np.uint8)
-            if len(normals_from_depth_output.shape) == 4:
-                normals_from_depth_output = normals_from_depth_output.squeeze(0)
-            save_path = f"{self.render_dir}/normals_from_depth/val_{i:04d}_normals_from_depth_{step}.png"
+            normals_from_depth = transform_normals_to_image_coord(normals_from_depth, camtoworlds)
+            normals_from_depth = torch.nn.functional.normalize(normals_from_depth, dim=-1)
+            normals_from_depth = (normals_from_depth * 0.5 + 0.5).squeeze().cpu().numpy()
+            
+            gt_normals = torch.nn.functional.normalize(data["normal"], dim=-1)
+            gt_normals = (gt_normals * 0.5 + 0.5).detach().squeeze().cpu().numpy()
+
+            canvas = np.concatenate([gt_normals, normals, normals_from_depth], axis=1)
+            canvas = (canvas * 255).astype(np.uint8)
+
+            save_path = f"{self.render_dir}/normals/val_{i:04d}_normal_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            imageio.imwrite(save_path, normals_from_depth_output)
+            imageio.imwrite(save_path, canvas)
 
             # write distortions
             render_dist = render_distort
