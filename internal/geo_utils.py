@@ -33,6 +33,5 @@ def transform_normals_to_image_coord(global_normal_map, c2w):
 
     # Transform normals to image coordinates
     camera_view_normal_map[..., 1:] *= -1
-    # camera_view_normal_map[..., 2] *= -1
 
     return camera_view_normal_map

@@ -193,13 +193,13 @@ class Dataset:
             irrdiance_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/irradiance_maps').replace('.png', '.exr')
 
             albedo = read_exr(albedo_path)
-            normal = read_exr(normal_path)
+            normals = read_exr(normal_path)
             roughness = read_exr(roughness_path)[..., :1]
             metallic = read_exr(metallic_path)[..., :1]
             irradiance = read_exr(irrdiance_path)
 
             irradiance = torch.from_numpy(irradiance).float()
-            normal = torch.from_numpy(normal).float()
+            normals = torch.from_numpy(normals).float()
             intrinsics = torch.cat(
                 [torch.from_numpy(albedo), torch.from_numpy(roughness), torch.from_numpy(metallic)], dim=-1
             ).float()
@@ -213,15 +213,15 @@ class Dataset:
             irradiance = torch.nn.functional.interpolate(
                 irradiance.permute(2, 0, 1)[None, ...], size=(h, w), mode='bilinear', align_corners=False
             )[0].permute(1, 2, 0)
-            normal = torch.nn.functional.interpolate(
-                normal.permute(2, 0, 1)[None, ...], size=(h, w), mode='bilinear', align_corners=False
+            normals = torch.nn.functional.interpolate(
+                normals.permute(2, 0, 1)[None, ...], size=(h, w), mode='bilinear', align_corners=False
             )[0].permute(1, 2, 0)
 
             # normalize normal vectors
-            normal = torch.nn.functional.normalize(normal, dim=-1)
+            normals = torch.nn.functional.normalize(normals, dim=-1)
 
             data['irradiance'] = irradiance
-            data['normal'] = normal
+            data['normals'] = normals
             data['intrinsics'] = intrinsics   
 
         if self.load_depths:

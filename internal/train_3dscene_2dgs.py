@@ -803,12 +803,12 @@ class Runner:
                 else:
                     curr_normal_lambda = 0.0
                 # normal consistency loss
-                normals = normals.squeeze(0).permute((2, 0, 1))
+                normals_tensor = normals.squeeze(0).permute((2, 0, 1))
                 normals_from_depth *= alphas.squeeze(0).detach()
                 if len(normals_from_depth.shape) == 4:
                     normals_from_depth = normals_from_depth.squeeze(0)
                 normals_from_depth = normals_from_depth.permute((2, 0, 1))
-                normal_error = (1 - (normals * normals_from_depth).sum(dim=0))[None]
+                normal_error = (1 - (normals_tensor * normals_from_depth).sum(dim=0))[None]
                 normalloss = curr_normal_lambda * normal_error.mean()
                 loss += normalloss
 
@@ -826,7 +826,9 @@ class Runner:
                 loss += intrinsics_loss * cfg.intrinsics_lambda
             
             if cfg.direct_normal_loss:
-                direct_normal_loss = (1 - (normals * gt_normals).sum(dim=0).mean()) / 2       
+                normals = transform_normals_to_image_coord(normals, camtoworlds)
+                normals = F.normalize(normals, dim=-1)
+                direct_normal_loss = (1 - (normals * gt_normals).sum(dim=-1).mean())   
                 loss += direct_normal_loss * cfg.direct_normal_lambda
 
             if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
@@ -1097,7 +1099,7 @@ class Runner:
             normals_from_depth = torch.nn.functional.normalize(normals_from_depth, dim=-1)
             normals_from_depth = (normals_from_depth * 0.5 + 0.5).squeeze().cpu().numpy()
             
-            gt_normals = torch.nn.functional.normalize(data["normal"], dim=-1)
+            gt_normals = torch.nn.functional.normalize(data["normals"], dim=-1)
             gt_normals = (gt_normals * 0.5 + 0.5).detach().squeeze().cpu().numpy()
 
             canvas = np.concatenate([gt_normals, normals, normals_from_depth], axis=1)
