@@ -157,7 +157,7 @@ class Config:
     app_opt_reg: float = 1e-6
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = True
+    depth_loss: bool = False
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
@@ -179,7 +179,7 @@ class Config:
     intrinsics_loss: bool = False
     intrinsics_lambda: float = 5e-1
     direct_normal_loss: bool = False
-    direct_normal_lambda: float = 1e-1
+    direct_normal_lambda: float = 5e-2
 
     # luzhan: add surface rendering as a regularizer
     surface_rendering_loss: bool = False
@@ -378,8 +378,8 @@ class Runner:
         self.valset = Dataset(
             self.parser, 
             split="val",
-            load_depths=cfg.depth_loss,
-            load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
+            load_depths=True,
+            load_intrinsics=True,    # luzhan: loading intrinsics
         )
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
@@ -791,8 +791,13 @@ class Runner:
 
                 # luzhan: new depth loss
                 gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
-                depths = torch.clamp(depths, min=0.)
+
+                depths = torch.where(depths > 0.0, 1 / depths, torch.zeros_like(depths))
                 depths = (depths - depths.min()) / (depths.max() - depths.min())
+
+                gt_median = torch.median(gt_depths)
+                median = torch.median(depths)
+                depths = depths * gt_median / median 
 
                 depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
@@ -826,10 +831,14 @@ class Runner:
                 loss += intrinsics_loss * cfg.intrinsics_lambda
             
             if cfg.direct_normal_loss:
+                if step > cfg.normal_start_iter:
+                    curr_normal_lambda = cfg.direct_normal_lambda
+                else:
+                    curr_normal_lambda = 0.0
                 normals = transform_normals_to_image_coord(normals, camtoworlds)
                 normals = F.normalize(normals, dim=-1)
                 direct_normal_loss = (1 - (normals * gt_normals).sum(dim=-1).mean())   
-                loss += direct_normal_loss * cfg.direct_normal_lambda
+                loss += direct_normal_loss * curr_normal_lambda
 
             if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
                 _, h, w, _ = depths.shape
@@ -1019,8 +1028,10 @@ class Runner:
         metrics = {"psnr": [], "ssim": [], "lpips": []}
 
         # luzhan: update render_dir
-        self.render_dir = f"{self.render_dir}/step_{step:05d}"
-        os.makedirs(self.render_dir, exist_ok=True)
+        curr_render_dir = f"{self.render_dir}/step_{step:05d}"
+
+
+        os.makedirs(curr_render_dir, exist_ok=True)
         
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
@@ -1060,7 +1071,7 @@ class Runner:
 
             # write images
             canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
-            save_path = f"{self.render_dir}/images/val_{i:04d}.png"
+            save_path = f"{curr_render_dir}/images/val_{i:04d}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
@@ -1083,7 +1094,7 @@ class Runner:
 
             canvas = np.concatenate([gt_depths, excepted_depths], axis=1)
 
-            save_path = f"{self.render_dir}/depths/val_{i:04d}_depth_{step}.png"
+            save_path = f"{curr_render_dir}/depths/val_{i:04d}_depth_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
@@ -1105,7 +1116,7 @@ class Runner:
             canvas = np.concatenate([gt_normals, normals, normals_from_depth], axis=1)
             canvas = (canvas * 255).astype(np.uint8)
 
-            save_path = f"{self.render_dir}/normals/val_{i:04d}_normal_{step}.png"
+            save_path = f"{curr_render_dir}/normals/val_{i:04d}_normal_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, canvas)
 
@@ -1120,7 +1131,7 @@ class Runner:
                 .numpy()
                 .astype(np.uint8)
             )
-            save_path = f"{self.render_dir}/distortions/val_{i:04d}_distortions_{step}.png"
+            save_path = f"{curr_render_dir}/distortions/val_{i:04d}_distortions_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, render_dist)
   
@@ -1128,7 +1139,7 @@ class Runner:
             alphas = alphas.repeat(1, 1, 1, 3).squeeze(0).detach().cpu().numpy()
             alphas = (alphas - np.min(alphas)) / (np.max(alphas) - np.min(alphas))
             alphas = (alphas * 255).astype(np.uint8)
-            save_path = f"{self.render_dir}/alphas/val_{i:04d}_alphas_{step}.png"
+            save_path = f"{curr_render_dir}/alphas/val_{i:04d}_alphas_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, alphas)
 
@@ -1145,7 +1156,7 @@ class Runner:
             canvas_top = torch.cat([gt_albedo, gt_roughness, gt_metallic], dim=2).squeeze(0).cpu().numpy()
             canvas_bottom = torch.cat([albedo, roughness, metallic], dim=2).squeeze(0).cpu().numpy()    # 
             canvas = np.concatenate([canvas_top, canvas_bottom], axis=0)
-            save_path = f"{self.render_dir}/intrinsics/val_{i:04d}_intrinsics_{step}.png"
+            save_path = f"{curr_render_dir}/intrinsics/val_{i:04d}_intrinsics_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
@@ -1156,14 +1167,14 @@ class Runner:
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
             cubemap = hdr_to_ldr(cubemap)
             cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
-            save_path = f"{self.render_dir}/cubemap/val_{i:04d}_cubemap_{step}.png"
+            save_path = f"{curr_render_dir}/cubemap/val_{i:04d}_cubemap_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, cubemap)
 
             envmap = self.light_model.export_envmap(return_img=True)
             envmap = hdr_to_ldr(envmap)
             envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
-            save_path = f"{self.render_dir}/envmap/val_{i:04d}_envmap_{step}.png"
+            save_path = f"{curr_render_dir}/envmap/val_{i:04d}_envmap_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, envmap)
 
@@ -1185,7 +1196,7 @@ class Runner:
             rendered_image = pbr_result["render_rgb"]
 
             canvas = torch.cat([diffuse_image, specular_image, rendered_image, colors[0]], dim=1).cpu().numpy()
-            save_path = f"{self.render_dir}/surface_renderer/val_{i:04d}_surface_renderer_{step}.png"
+            save_path = f"{curr_render_dir}/surface_renderer/val_{i:04d}_surface_renderer_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
@@ -1193,7 +1204,7 @@ class Runner:
             gt_irradiance = data["irradiance"].to(irradiace)
 
             canvas = torch.cat([gt_irradiance[0], irradiace], dim=1).cpu().numpy()
-            save_path = f"{self.render_dir}/irradiance/val_{i:04d}_irradiance_{step}.png"
+            save_path = f"{curr_render_dir}/irradiance/val_{i:04d}_irradiance_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
