@@ -41,7 +41,7 @@ from gsplat.strategy import DefaultStrategy
 from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
 
-from geo_utils import transform_normals_to_image_coord
+from geo_utils import transform_normals_to_image_coord, obtain_surface_position
 
 
 @dataclass
@@ -159,7 +159,7 @@ class Config:
     # Enable depth loss. (experimental)
     depth_loss: bool = False
     # Weight for depth loss
-    depth_lambda: float = 1e-2
+    depth_lambda: float = 1e-1
 
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
@@ -179,7 +179,7 @@ class Config:
     intrinsics_loss: bool = False
     intrinsics_lambda: float = 5e-1
     direct_normal_loss: bool = False
-    direct_normal_lambda: float = 5e-2
+    direct_normal_lambda: float = 1e-1
 
     # luzhan: add surface rendering as a regularizer
     surface_rendering_loss: bool = False
@@ -836,9 +836,9 @@ class Runner:
                     curr_normal_lambda = cfg.direct_normal_lambda
                 else:
                     curr_normal_lambda = 0.0
-                normals = transform_normals_to_image_coord(normals, camtoworlds)
-                normals = F.normalize(normals, dim=-1)
-                direct_normal_loss = (1 - (normals * gt_normals).sum(dim=-1).mean())   
+                normals_tensor = transform_normals_to_image_coord(normals, camtoworlds)
+                normals_tensor = F.normalize(normals_tensor, dim=-1)
+                direct_normal_loss = (1 - (normals_tensor * gt_normals).sum(dim=-1).mean())   
                 loss += direct_normal_loss * curr_normal_lambda
 
             if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
@@ -875,6 +875,8 @@ class Runner:
                     surface_rendering_loss = F.l1_loss(colors_surf, pixels)
                     loss += surface_rendering_loss * cfg.surface_rendering_lambda
 
+            if torch.isnan(loss):
+                pass
             loss.backward()
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
@@ -1061,6 +1063,7 @@ class Runner:
                 render_mode="RGB+ED",
             )  # [1, H, W, 3]
             excepted_depths = colors[..., -1:]
+            depths_tensor = excepted_depths.clone()
             colors = torch.clamp(colors, 0.0, 1.0)
 
             # luzhan: take intrinsics
@@ -1162,8 +1165,12 @@ class Runner:
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # luzhan: render and write env map at current camera
-            # point_xyz = torch.linalg.inv(camtoworlds)[0, :3, 3]
-            point_xyz = torch.zeros(3).to(camtoworlds)
+            # point_xyz = torch.zeros(3).to(camtoworlds)
+            point_xyz = obtain_surface_position(
+                depth_map=depths_tensor,
+                c2w=camtoworlds,
+                distance_to_surface=0.3,
+            )
             self.render_envmap(point_xyz=point_xyz)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
             cubemap = hdr_to_ldr(cubemap)
@@ -1274,7 +1281,8 @@ class Runner:
                 render_mode="RGB+ED",
             )  # [1, H, W, 4]
             colors = torch.clamp(renders[0, ..., 0:3], 0.0, 1.0)  # [H, W, 3]
-            depths = renders[0, ..., 3:4]  # [H, W, 1]
+            depths = renders[0, ..., -1:]  # [H, W, 1]
+            depths = torch.where(depths > 0, 1 / depths, torch.zeros_like(depths))
             depths = (depths - depths.min()) / (depths.max() - depths.min())
 
             # luzhan: take intrinsics
@@ -1285,11 +1293,6 @@ class Runner:
             surf_normals = (surf_normals - surf_normals.min()) / (
                 surf_normals.max() - surf_normals.min()
             )
-
-            # write images
-            # canvas = torch.cat(
-            #     [colors, depths.repeat(1, 1, 3)], dim=0 if width > height else 1
-            # )
 
             # luzhan: write images, including colors, depths, normals, albedo, roughness, metallicity
             canvas = torch.cat(

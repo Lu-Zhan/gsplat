@@ -36,6 +36,8 @@ def get_canonical_rays(Ks, hw):
         (0, 1),
         value=1.0,
     )  # [H * W, 3]
+
+    camera_dirs[..., 1] *= -1   # to match the normal coordinate system
     
     camera_dirs = F.normalize(camera_dirs, dim=-1)
 
@@ -52,6 +54,8 @@ class SurfaceRenderer:
     def update_params(self, ref_Ks, hw):
         self.camera_dirs = get_canonical_rays(ref_Ks[0], hw)
         self.h, self.w = hw
+
+        # save self.camera_dirs to 
     
     def get_view_dirs(self, c2w):
         # (h, w, 1, 3) * (1, 1, 3, 3) -> (h, w, 3, (3)) -> (h, w, 3)
