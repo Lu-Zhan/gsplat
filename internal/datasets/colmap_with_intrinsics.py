@@ -1,5 +1,6 @@
 import os
 import json
+from Imath import point
 from tqdm import tqdm
 from typing import Any, Dict, List, Optional
 from typing_extensions import assert_never
@@ -64,6 +65,7 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        align_first_camera: bool = False,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -149,6 +151,21 @@ class Parser:
 
         w2c_mats = np.stack(w2c_mats, axis=0)
 
+        if align_first_camera:
+            print("Aligning first camera...")
+            # target_rotation = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+            rot_0 = w2c_mats[0][:3, :3].copy()
+            t_0 = w2c_mats[0][:3, 3].copy()
+            rot_0_inv = np.linalg.inv(rot_0).copy()
+            # rotation_transform = target_rotation @ inv_first_rot
+
+            for i in range(len(w2c_mats)):
+                rot_i = w2c_mats[i][:3, :3].copy()
+                t_i = w2c_mats[i][:3, 3].copy()
+
+                w2c_mats[i][:3, :3] = rot_0_inv @ rot_i
+                w2c_mats[i][:3, 3] = rot_0_inv @ (t_i - t_0)
+
         # Convert extrinsics to camera-to-world.
         camtoworlds = np.linalg.inv(w2c_mats)
 
@@ -207,6 +224,10 @@ class Parser:
         points_err = manager.point3D_errors.astype(np.float32)
         points_rgb = manager.point3D_colors.astype(np.uint8)
         point_indices = dict()
+
+        # luzhan: align_first_camera
+        if align_first_camera:
+            points = (points - t_0[None, :]) @ rot_0_inv.T
 
         image_id_to_name = {v: k for k, v in manager.name_to_image_id.items()}
         for point_id, data in manager.point3D_id_to_images.items():
