@@ -20,7 +20,7 @@ import viser
 from datasets.colmap_with_intrinsics import Dataset, Parser
 # from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
-from torch import Tensor
+from torch import Tensor, gt
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -367,6 +367,7 @@ class Runner:
             factor=cfg.data_factor,
             normalize=True,
             test_every=cfg.test_every,
+            align_first_camera=True,
         )
         self.trainset = Dataset(
             self.parser,
@@ -795,9 +796,9 @@ class Runner:
                 depths = torch.where(depths > 0.0, 1 / depths, torch.zeros_like(depths))
                 depths = (depths - depths.min()) / (depths.max() - depths.min())
 
-                gt_median = torch.median(gt_depths)
-                median = torch.median(depths)
-                depths = depths * gt_median / median 
+                gt_median = torch.median(gt_depths[gt_depths > 0.0])
+                median = torch.median(depths[depths > 0.0])
+                depths = depths * gt_median / (median + 1e-8)
 
                 depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda

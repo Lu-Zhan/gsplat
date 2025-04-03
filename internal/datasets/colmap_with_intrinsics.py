@@ -65,7 +65,7 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
-        align_first_camera: bool = False,
+        align_first_camera: bool = True,
     ):
         self.data_dir = data_dir
         self.factor = factor
