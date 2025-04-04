@@ -37,7 +37,7 @@ def transform_normals_to_image_coord(global_normal_map, c2w):
     return camera_view_normal_map
 
 
-def obtain_surface_position(depth_map, c2w, distance_to_surface=0.1):
+def obtain_surface_position(depth_map, distance_to_surface=0.1):
     """
     Returns the center position of the surface.
     """
@@ -46,11 +46,10 @@ def obtain_surface_position(depth_map, c2w, distance_to_surface=0.1):
     start_h, end_h = h // 2 - h // 20, h // 2 + h // 20
     start_w, end_w = w // 2 - w // 20, w // 2 + w // 20
     center_depth_map = depth_map[0, start_h:end_h, start_w:end_w, 0]
-    center_distance = torch.mean(center_depth_map) - distance_to_surface
+    center_distance = torch.min(center_depth_map) - distance_to_surface
     center_distance = torch.clamp(center_distance, min=0.0)
 
     # move camera to the center of the surface
-    vector_z = torch.tensor([0.0, 0.0, center_distance, 1]).to(c2w)
-    surface_point = vector_z @ c2w[0].T
+    vector_z = torch.tensor([0.0, 0.0, center_distance]).to(depth_map.device)
 
-    return surface_point[:3]    # [3]
+    return vector_z

@@ -82,6 +82,7 @@ class CubemapLight():
     def update_cubemap(self, cubemap):
         # cubemap is ldr -> linear -> inv tonemap
         self.cubemap = inverse_tonemap(srgb_to_linear(cubemap)).contiguous()
+        # self.cubemap = cubemap.contiguous()
 
     # processing
     def get_mip(self, roughness: torch.Tensor) -> torch.Tensor:
@@ -119,7 +120,7 @@ class CubemapLight():
         # cubemap_to_latlong
         gy, gx = torch.meshgrid(
             torch.linspace(0.0 + 1.0 / res[0], 1.0 - 1.0 / res[0], res[0], device="cuda"),
-            torch.linspace(-1.0 + 1.0 / res[1], 1.0 - 1.0 / res[1], res[1], device="cuda"),
+            -torch.linspace(1.0 / res[1], 2.0 - 1.0 / res[1], res[1], device="cuda"),
             indexing="ij",
         )
 

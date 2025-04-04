@@ -26,14 +26,13 @@ def look_at(eye: torch.Tensor, center: torch.Tensor, up: torch.Tensor) -> torch.
 
 
 def create_cubemap_c2w(pos):
-    # using colmap coordinate system, +x is right, +y is backward, +z is up
     directions_and_ups_local = [
-        (torch.tensor([ 1.0, 0.0, 0.0]), torch.tensor([0.0, 0.0, 1.0])),  # +X
-        (torch.tensor([-1.0, 0.0, 0.0]), torch.tensor([0.0, 0.0, 1.0])),  # -X
-        (torch.tensor([ 0.0, 0.0, 1.0]), torch.tensor([-1.0, 0.0, 0.0])),  # +Y, up of +X
-        (torch.tensor([ 0.0, 0.0, -1.0]), torch.tensor([1.0, 0.0, 0.0])),  # -Y, down of +X
-        (torch.tensor([ 0.0, -1.0, 0.0]), torch.tensor([0.0, 0.0, 1.0])),  # +Z, right of +X
-        (torch.tensor([ 0.0, 1.0, 0.0]), torch.tensor([0.0, 0.0, 1.0])),  # -Z, left of +X
+        (torch.tensor([1.0, 0.0, 0.0]), torch.tensor([0.0, 1.0, 0.0])),  # +X
+        (torch.tensor([-1.0, 0.0, 0.0]), torch.tensor([0.0, 1.0, 0.0])),  # -X
+        (torch.tensor([ 0.0, 1.0, 0.0]), torch.tensor([0.0, 0.0, -1.0])),  # +Y, up of +X
+        (torch.tensor([ 0.0, -1.0, 0.0]), torch.tensor([0.0, 0.0, 1.0])),  # -Y, down of +X
+        (torch.tensor([ 0.0, 0.0, 1.0]), torch.tensor([0.0, 1.0, 0.0])),  # +Z, right of +X
+        (torch.tensor([ 0.0, 0.0, -1.0]), torch.tensor([0.0, 1.0, 0.0])),  # -Z, left of +X
     ]
     
     # 4. 对每个方向，用 R_fwd 把局部空间的 direction / up 转到世界空间

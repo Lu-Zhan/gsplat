@@ -1,9 +1,11 @@
+import enum
 import json
 import math
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
+from Imath import point
 from einops import rearrange
 
 import imageio
@@ -606,22 +608,39 @@ class Runner:
         )
     
     # luzhan: render env at given point
-    def render_envmap(self, point_xyz):
-        Ks, c2w_cubemap = self.light_model.get_Ks_c2w(point_xyz)
+    def render_envmap(self, point_xyz, c2w, Ks):
+        Ks, c2w_cubemaps = self.light_model.get_Ks_c2w(point_xyz)
 
-        colors = self.rasterize_splats(
-            camtoworlds=c2w_cubemap,
-            Ks=Ks,
-            width=self.light_model.height,
-            height=self.light_model.height,
-            near_plane=0.01,
-            far_plane=self.cfg.far_plane,
-            image_ids=None,
-            render_mode="RGB",
-            distloss=False,
-            render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
-        )[0][..., :3]   # [6, H, W, 3]
+        # rotate c2w to align with camera forward direction
+        ref_w2c = torch.linalg.inv(c2w[0])
 
+        for i, c2w_cubemap in enumerate(c2w_cubemaps):
+            w2c = torch.linalg.inv(c2w_cubemap.clone())
+            w2c = w2c @ ref_w2c
+
+            c2w_cubemaps[i] = torch.linalg.inv(w2c)
+        
+        width = self.light_model.height
+        height = self.light_model.height
+
+        colors = []
+        for i, c2w_cubemap in enumerate(c2w_cubemaps):
+            color = self.rasterize_splats(
+                camtoworlds=c2w_cubemap[None, ...],
+                Ks=Ks[:1],
+                width=width,
+                height=height,
+                near_plane=0.02,
+                far_plane=self.cfg.far_plane,
+                image_ids=None,
+                render_mode="RGB",
+                distloss=False,
+                render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+            )[0][..., :3]   # [6, H, W, 3]
+
+            colors.append(color)
+        
+        colors = torch.cat(colors, dim=0)
         self.light_model.update_cubemap(colors)
     
     def train(self):
@@ -1165,13 +1184,12 @@ class Runner:
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
             # luzhan: render and write env map at current camera
-            # point_xyz = torch.zeros(3).to(camtoworlds)
+            # point_xyz = torch.tensor([0, 0, 1.3]).to(camtoworlds)
             point_xyz = obtain_surface_position(
                 depth_map=depths_tensor,
-                c2w=camtoworlds,
-                distance_to_surface=0.3,
+                distance_to_surface=0.2,
             )
-            self.render_envmap(point_xyz=point_xyz)
+            self.render_envmap(point_xyz=point_xyz, c2w=camtoworlds, Ks=Ks)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
             cubemap = hdr_to_ldr(cubemap)
             cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
