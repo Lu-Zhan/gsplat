@@ -31,7 +31,7 @@ def transform_normals_to_image_coord(global_normal_map, c2w):
     # Reshape back to original normal map shape
     camera_view_normal_map = camera_view_normals.T.view(1, H, W, 3)
 
-    # Transform normals to image coordinates, cam coord: x -> right, y -> down, z -> forward, image coord: x -> right, y -> up, z -> forward
+    # Transform normals to image coordinates, cam coord: x -> right, y -> down, z -> forward, image coord: x -> right, y -> up, z -> backward
     camera_view_normal_map[..., 1:] *= -1
 
     return camera_view_normal_map

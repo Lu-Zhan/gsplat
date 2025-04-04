@@ -37,7 +37,8 @@ def get_canonical_rays(Ks, hw):
         value=1.0,
     )  # [H * W, 3]
 
-    camera_dirs[..., 1] *= -1   # to match the normal coordinate system
+    camera_dirs[..., 1] *= -1   # to match the cubemap coordinate system
+    camera_dirs[..., 0] *= -1
     
     camera_dirs = F.normalize(camera_dirs, dim=-1)
 
@@ -57,9 +58,9 @@ class SurfaceRenderer:
 
         # save self.camera_dirs to 
     
-    def get_view_dirs(self, c2w):
-        # (h, w, 1, 3) * (1, 1, 3, 3) -> (h, w, 3, (3)) -> (h, w, 3)
-        return -(self.camera_dirs[..., None, :] * c2w[None, None, :3, :3]).sum(dim=-1)
+    # def get_view_dirs(self, c2w):
+    #     # (h, w, 1, 3) * (1, 1, 3, 3) -> (h, w, 3, (3)) -> (h, w, 3)
+    #     return -(self.camera_dirs[..., None, :] * c2w[None, None, :3, :3]).sum(dim=-1)
 
     def render(
         self, 
@@ -72,7 +73,8 @@ class SurfaceRenderer:
     ):  
         normal_mask = torch.ones_like(roughness).bool()
 
-        view_dirs = self.get_view_dirs(c2w=c2w)
+        # view_dirs = self.get_view_dirs(c2w=c2w)
+        view_dirs = self.camera_dirs
         light_model.build_mips()
 
         pbr_result = pbr_shading(

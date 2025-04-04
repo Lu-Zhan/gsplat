@@ -158,7 +158,7 @@ def inverse_tonemap(color):
     b = B - D * color
     c = -E * color
 
-    x = (-b + torch.sqrt(b.pow(2) - 4*a*c)) / (2*a)
+    x = (-b + torch.sqrt(b.pow(2) - 4*a*c)) / (2*a + 1e-8)
    
     return x
 

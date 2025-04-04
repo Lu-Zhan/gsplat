@@ -637,10 +637,11 @@ class Runner:
                 distloss=False,
                 render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )[0][..., :3]   # [6, H, W, 3]
-
+            
             colors.append(color)
         
         colors = torch.cat(colors, dim=0)
+        colors = torch.clamp(colors, 0.0, 1.0)
         self.light_model.update_cubemap(colors)
     
     def train(self):
@@ -1187,7 +1188,7 @@ class Runner:
             # point_xyz = torch.tensor([0, 0, 1.3]).to(camtoworlds)
             point_xyz = obtain_surface_position(
                 depth_map=depths_tensor,
-                distance_to_surface=0.2,
+                distance_to_surface=0.5,
             )
             self.render_envmap(point_xyz=point_xyz, c2w=camtoworlds, Ks=Ks)
             cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
@@ -1207,6 +1208,11 @@ class Runner:
             # luzhan: surface renderer
             if self.surface_renderer.camera_dirs is None:
                 self.surface_renderer.update_params(Ks, hw=(height, width))
+
+            normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
+            # normals_tensor[..., -1] *= -1 # flip z axis: opengl -> cubemap 
+            normals_tensor[..., 0] *= -1 # flip x axis: opengl -> cubemap 
+            normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
 
             pbr_result = self.surface_renderer.render(
                 c2w=camtoworlds[0],
