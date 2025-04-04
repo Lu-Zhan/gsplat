@@ -195,15 +195,23 @@ def pbr_shading(
     if tone:
         # Tone Mapping
         render_rgb = tonemap(render_rgb)
+        diffuse_rgb = tonemap(diffuse_rgb)
+        specular_rgb = tonemap(specular_rgb)
     else:
         render_rgb = render_rgb.clamp(min=0.0, max=1.0)
+        diffuse_rgb = diffuse_rgb.clamp(min=0.0, max=1.0)
+        specular_rgb = specular_rgb.clamp(min=0.0, max=1.0)
 
     ### NOTE: close `gamma` will cause better resuls in novel view synthesis but wrose relighting results.
     ### NOTE: it is worth to figure out a better way to handle both novel view synthesis and relighting
     if gamma:
         render_rgb = linear_to_srgb(render_rgb.squeeze())
+        diffuse_rgb = linear_to_srgb(diffuse_rgb.squeeze())
+        specular_rgb = linear_to_srgb(specular_rgb.squeeze())
 
     render_rgb = torch.where(mask, render_rgb, background)
+    diffuse_rgb = torch.where(mask, diffuse_rgb, background)
+    specular_rgb = torch.where(mask, specular_rgb, background)
 
     results.update(
         {

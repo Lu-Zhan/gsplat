@@ -26,6 +26,7 @@ from torch import Tensor, gt
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+# from gsplat.internal.pbr import surface_rendering
 from utils import (
     AppearanceOptModule,
     CameraOptModule,
@@ -101,7 +102,7 @@ class Config:
     # luzhan: add Initialization for env map
     init_num_pts_bg: int = 1_000
     radius_of_sphere_bg: float = 100.0
-    render_with_bg: int = 1
+    render_with_bg: int = 0
 
     # Near plane clipping distance
     near_plane: float = 0.2
@@ -185,10 +186,10 @@ class Config:
 
     # luzhan: add surface rendering as a regularizer
     surface_rendering_loss: bool = False
-    surface_rendering_lambda: float = 5e-1
+    surface_rendering_lambda: float = 1e-1
     irradiance_loss: bool = False
-    irradiance_lambda: float = 5e-1
-    surface_rendering_start_iter: int = 100
+    irradiance_lambda: float = 1e-1
+    surface_rendering_start_iter: int = 7000
 
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
@@ -608,7 +609,7 @@ class Runner:
         )
     
     # luzhan: render env at given point
-    def render_envmap(self, point_xyz, c2w, Ks):
+    def render_envmap(self, point_xyz, c2w):
         Ks, c2w_cubemaps = self.light_model.get_Ks_c2w(point_xyz)
 
         # rotate c2w to align with camera forward direction
@@ -619,17 +620,14 @@ class Runner:
             w2c = w2c @ ref_w2c
 
             c2w_cubemaps[i] = torch.linalg.inv(w2c)
-        
-        width = self.light_model.height
-        height = self.light_model.height
 
         colors = []
         for i, c2w_cubemap in enumerate(c2w_cubemaps):
             color = self.rasterize_splats(
                 camtoworlds=c2w_cubemap[None, ...],
                 Ks=Ks[:1],
-                width=width,
-                height=height,
+                width=self.light_model.height,
+                height=self.light_model.height,
                 near_plane=0.02,
                 far_plane=self.cfg.far_plane,
                 image_ids=None,
@@ -637,12 +635,56 @@ class Runner:
                 distloss=False,
                 render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )[0][..., :3]   # [6, H, W, 3]
+
+            # color = torch.zeros_like(color)
+            # if i == 0:
+            #     color[..., 0] = 1.0
+            # elif i == 1:
+            #     color[..., 1] = 1.0
+            # elif i == 2:
+            #     color[..., 2] = 1.0
+            # elif i == 3:
+            #     color[..., 0] = 1.0
+            #     color[..., 1] = 1.0
+            # elif i == 4:
+            #     color[..., 0] = 1.0
+            #     color[..., 2] = 1.0
+            # elif i == 5:
+            #     color[..., 1] = 1.0
+            #     color[..., 2] = 1.0
             
             colors.append(color)
         
         colors = torch.cat(colors, dim=0)
         colors = torch.clamp(colors, 0.0, 1.0)
         self.light_model.update_cubemap(colors)
+    
+    # def render_envmap_fixed(self, point_xyz, c2w):
+    #     point_xyz = torch.cat([point_xyz, torch.tensor([1.]).to(point_xyz)], dim=-1)
+    #     point_xyz = point_xyz @ c2w[0].T
+
+    #     Ks, c2w_cubemaps = self.light_model.get_Ks_c2w(point_xyz[:3])
+
+    #     colors = []
+    #     for i, c2w_cubemap in enumerate(c2w_cubemaps):
+    #         color = self.rasterize_splats(
+    #             camtoworlds=c2w_cubemap[None, ...],
+    #             Ks=Ks[:1],
+    #             width=self.light_model.height,
+    #             height=self.light_model.height,
+    #             near_plane=0.02,
+    #             far_plane=self.cfg.far_plane,
+    #             image_ids=None,
+    #             render_mode="RGB",
+    #             distloss=False,
+    #             render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
+    #         )[0][..., :3]   # [6, H, W, 3]
+            
+    #         colors.append(color)
+        
+    #     colors = torch.cat(colors, dim=0)
+    #     colors = torch.clamp(colors, 0.0, 1.0)
+    #     self.light_model.update_cubemap(colors)
     
     def train(self):
         cfg = self.cfg
@@ -762,6 +804,7 @@ class Runner:
                 colors, intrinsics, depths = renders[..., 0:3], None, renders[..., 3:4]
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
+                depths_org = depths.clone()
                 # luzhan: formulate roughness, roughness = roughness * (rmax - rmin) + rmin from GS-IR
                 # rmax, rmin = 1.0, 0.04
                 # intrinsics[..., 3:4] = intrinsics[..., 3:4] * (rmax - rmin) + rmin
@@ -813,8 +856,9 @@ class Runner:
                 # luzhan: new depth loss
                 gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
 
-                depths = torch.where(depths > 0.0, 1 / depths, torch.zeros_like(depths))
-                depths = (depths - depths.min()) / (depths.max() - depths.min())
+                mask_depths = depths > 0.0
+                depths = torch.where(mask_depths, 1 / depths, torch.zeros_like(depths))
+                depths = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
 
                 gt_median = torch.median(gt_depths[gt_depths > 0.0])
                 median = torch.median(depths[depths > 0.0])
@@ -862,37 +906,30 @@ class Runner:
                 loss += direct_normal_loss * curr_normal_lambda
 
             if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
-                _, h, w, _ = depths.shape
-                depths_center_patch = depths[0, h // 4:-h // 4, w // 4:-w // 4]
-                distance = max(depths_center_patch.min(), depths_center_patch[h // 4, w // 4]) + 0.1
-                point_xyz = camtoworlds[0] @ torch.tensor([0, 0, distance, 1], device=device).t()
-                self.render_envmap(point_xyz[:3])
-
-                albedo = intrinsics[0, ..., :3]
-                roughness = intrinsics[0, ..., 3:4]
-                metallic = intrinsics[0, ..., 4:5]
-
-                if self.surface_renderer.camera_dirs is None:
-                    self.surface_renderer.update_params(ref_Ks=Ks, hw=[h, w])
-
-                pbr_result = self.surface_renderer.render(
-                    c2w=camtoworlds[0],
-                    normals=normals[0],   # 
-                    albedo=albedo,
-                    roughness=roughness,
-                    metallic=metallic,
-                    light_model=self.light_model,
+                pbr_result = self.surface_rendering(
+                    Ks=Ks,
+                    hw=(height, width),
+                    camtoworlds=camtoworlds,
+                    depths_tensor=depths_org,
+                    normals_tensor=normals_tensor,
+                    albedo=intrinsics[..., :3],
+                    roughness=intrinsics[..., 3:4],
+                    metallic=intrinsics[..., 4:5],
                 )
 
-                irradiance = pbr_result["diffuse_light"]
-                colors_surf = pbr_result["render_rgb"]
+                irradiance = pbr_result["diffuse_light"][None, ...]
+                rendered_image = pbr_result["render_rgb"][None, ...]
 
                 if cfg.irradiance_loss:
-                    irradiance_loss = F.l1_loss(irradiance, gt_irradiance[0])
+                    irradiance_loss = F.l1_loss(irradiance, gt_irradiance)
                     loss += irradiance_loss * cfg.irradiance_lambda
                 
                 if cfg.surface_rendering_loss:
-                    surface_rendering_loss = F.l1_loss(colors_surf, pixels)
+                    surf_l1loss = F.l1_loss(rendered_image, pixels)
+                    surf_ssimloss = 1.0 - self.ssim(
+                        pixels.permute(0, 3, 1, 2), colors.permute(0, 3, 1, 2)
+                    )
+                    surface_rendering_loss = surf_l1loss * (1.0 - cfg.ssim_lambda) + surf_ssimloss * cfg.ssim_lambda
                     loss += surface_rendering_loss * cfg.surface_rendering_lambda
 
             if torch.isnan(loss):
@@ -901,13 +938,16 @@ class Runner:
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
-                desc += f"depth loss={depthloss.item():.6f}| "
+                desc += f"dep loss={depthloss.item():.4f}| "
             if cfg.dist_loss:
-                desc += f"dist loss={distloss.item():.6f}"
+                desc += f"dist loss={distloss.item():.4f}"
             if cfg.pose_opt and cfg.pose_noise:
                 # monitor the pose error if we inject noise
                 pose_err = F.l1_loss(camtoworlds_gt, camtoworlds)
                 desc += f"pose err={pose_err.item():.6f}| "
+            if step > cfg.surface_rendering_start_iter:
+                if cfg.surface_rendering_loss:
+                    desc += f"surf loss={surface_rendering_loss.item():.4f}| "
             pbar.set_description(desc)
 
             if cfg.tb_every > 0 and step % cfg.tb_every == 0:
@@ -1048,7 +1088,7 @@ class Runner:
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
         ellipse_time = 0
-        metrics = {"psnr": [], "ssim": [], "lpips": []}
+        metrics = {"psnr": [], "ssim": [], "lpips": [], "psnr_surf": [], "ssim_surf": [], "lpips_surf": []}
 
         # luzhan: update render_dir
         curr_render_dir = f"{self.render_dir}/step_{step:05d}"
@@ -1184,43 +1224,15 @@ class Runner:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
-            # luzhan: render and write env map at current camera
-            # point_xyz = torch.tensor([0, 0, 1.3]).to(camtoworlds)
-            point_xyz = obtain_surface_position(
-                depth_map=depths_tensor,
-                distance_to_surface=0.5,
-            )
-            self.render_envmap(point_xyz=point_xyz, c2w=camtoworlds, Ks=Ks)
-            cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
-            cubemap = hdr_to_ldr(cubemap)
-            cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
-            save_path = f"{curr_render_dir}/cubemap/val_{i:04d}_cubemap_{step}.png"
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            imageio.imwrite(save_path, cubemap)
-
-            envmap = self.light_model.export_envmap(return_img=True)
-            envmap = hdr_to_ldr(envmap)
-            envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
-            save_path = f"{curr_render_dir}/envmap/val_{i:04d}_envmap_{step}.png"
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            imageio.imwrite(save_path, envmap)
-
-            # luzhan: surface renderer
-            if self.surface_renderer.camera_dirs is None:
-                self.surface_renderer.update_params(Ks, hw=(height, width))
-
-            normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
-            # normals_tensor[..., -1] *= -1 # flip z axis: opengl -> cubemap 
-            normals_tensor[..., 0] *= -1 # flip x axis: opengl -> cubemap 
-            normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
-
-            pbr_result = self.surface_renderer.render(
-                c2w=camtoworlds[0],
-                normals=normals_tensor[0],
-                albedo=albedo[0],
-                roughness=roughness[0, ..., :1],
-                metallic=metallic[0, ..., :1],
-                light_model=self.light_model,
+            pbr_result = self.surface_rendering(
+                Ks=Ks,
+                hw=(height, width),
+                camtoworlds=camtoworlds,
+                depths_tensor=depths_tensor,
+                normals_tensor=normals_tensor,
+                albedo=albedo,
+                roughness=roughness,
+                metallic=metallic,
             )
             
             diffuse_image = pbr_result["diffuse_rgb"]
@@ -1240,27 +1252,60 @@ class Runner:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
+            # save cubemap and envmap
+            cubemap = rearrange(self.light_model.cubemap, 'n h w c -> h (n w) c')
+            cubemap = hdr_to_ldr(cubemap)
+            cubemap = (cubemap.cpu().numpy() * 255).astype(np.uint8)
+            save_path = f"{curr_render_dir}/cubemap/val_{i:04d}_cubemap_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, cubemap)
+
+            envmap = self.light_model.export_envmap(return_img=True)
+            envmap = hdr_to_ldr(envmap)
+            envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+            save_path = f"{curr_render_dir}/envmap/val_{i:04d}_envmap_{step}.png"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            imageio.imwrite(save_path, envmap)
+
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
             metrics["psnr"].append(self.psnr(colors, pixels))
             metrics["ssim"].append(self.ssim(colors, pixels))
             metrics["lpips"].append(self.lpips(colors, pixels))
 
+            rendered_image = rendered_image[None, ...].permute(0, 3, 1, 2)  # [1, 3, H, W]
+            metrics["psnr_surf"].append(self.psnr(rendered_image, pixels))
+            metrics["ssim_surf"].append(self.ssim(rendered_image, pixels))
+            metrics["lpips_surf"].append(self.lpips(rendered_image, pixels))
+
         ellipse_time /= len(valloader)
 
         psnr = torch.stack(metrics["psnr"]).mean()
         ssim = torch.stack(metrics["ssim"]).mean()
         lpips = torch.stack(metrics["lpips"]).mean()
+
+        psnr_surf = torch.stack(metrics["psnr_surf"]).mean()
+        ssim_surf = torch.stack(metrics["ssim_surf"]).mean()
+        lpips_surf = torch.stack(metrics["lpips_surf"]).mean()
+
         print(
             f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
             f"Time: {ellipse_time:.3f}s/image "
             f"Number of GS: {len(self.splats['means'])}"
+        )
+
+        print(
+            f"==Surface Rendering==",
+            f"PSNR: {psnr_surf.item():.3f}, SSIM: {ssim_surf.item():.4f}, LPIPS: {lpips_surf.item():.3f}",
         )
         # save stats as json
         stats = {
             "psnr": psnr.item(),
             "ssim": ssim.item(),
             "lpips": lpips.item(),
+            "psnr_surf": psnr_surf.item(),
+            "ssim_surf": ssim_surf.item(),
+            "lpips_surf": lpips_surf.item(),
             "ellipse_time": ellipse_time,
             "num_GS": len(self.splats["means"]),
         }
@@ -1356,6 +1401,46 @@ class Runner:
         )  # [1, H, W, 3]
         return render_colors[0].cpu().numpy()
 
+
+    def surface_rendering(
+        self,
+        Ks,
+        hw,
+        camtoworlds,
+        depths_tensor,
+        normals_tensor, # (1, h, w, 3)
+        albedo, # (1, h, w, 3)
+        roughness, # (1, h, w, 1)
+        metallic, # (1, h, w, 1)
+        distance_to_surface=0.5,
+    ):
+        # luzhan: render and write env map at current camera
+        point_xyz = obtain_surface_position(
+            depth_map=depths_tensor,
+            distance_to_surface=distance_to_surface,
+        )
+
+        self.render_envmap(point_xyz=point_xyz, c2w=camtoworlds)
+
+        # luzhan: surface renderer
+        if self.surface_renderer.camera_dirs is None:
+            self.surface_renderer.update_params(Ks, hw=hw)
+
+        # normals_tensor = torch.nn.functional.normalize(data["normals"], dim=-1).to(normals_tensor)
+        normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
+        normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
+        normals_tensor[..., 0] *= -1 # flip x axis: opengl -> cubemap 
+
+        pbr_result = self.surface_renderer.render(
+            c2w=camtoworlds[0],
+            normals=normals_tensor[0],
+            albedo=albedo[0],
+            roughness=roughness[0, ..., :1],
+            metallic=metallic[0, ..., :1],
+            light_model=self.light_model,
+        )
+
+        return pbr_result
 
 def main(cfg: Config):
     runner = Runner(cfg)

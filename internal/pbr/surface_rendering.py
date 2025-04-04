@@ -37,12 +37,13 @@ def get_canonical_rays(Ks, hw):
         value=1.0,
     )  # [H * W, 3]
 
-    camera_dirs[..., 1] *= -1   # to match the cubemap coordinate system
-    camera_dirs[..., 0] *= -1
+    # camera_dirs[..., 1] *= -1   # to match the cubemap coordinate system
+    # camera_dirs[..., 0] *= -1
     
     camera_dirs = F.normalize(camera_dirs, dim=-1)
 
     return camera_dirs.reshape((h, w, 3))
+    # return camera_dirs
 
 
 class SurfaceRenderer:
@@ -55,12 +56,15 @@ class SurfaceRenderer:
     def update_params(self, ref_Ks, hw):
         self.camera_dirs = get_canonical_rays(ref_Ks[0], hw)
         self.h, self.w = hw
-
-        # save self.camera_dirs to 
     
     # def get_view_dirs(self, c2w):
-    #     # (h, w, 1, 3) * (1, 1, 3, 3) -> (h, w, 3, (3)) -> (h, w, 3)
-    #     return -(self.camera_dirs[..., None, :] * c2w[None, None, :3, :3]).sum(dim=-1)
+    #     view_dirs = -(
+    #         (F.normalize(self.camera_dirs[:, None, :], p=2, dim=-1) * c2w[None, :3, :3])  # [HW, 3, 3]
+    #         .sum(dim=-1)
+    #         .reshape(self.h, self.w, 3)
+    #     )  # [H, W, 3]
+
+    #     return view_dirs
 
     def render(
         self, 
