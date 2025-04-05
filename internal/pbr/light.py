@@ -82,9 +82,7 @@ class CubemapLight():
     def update_cubemap(self, cubemap):
         # cubemap is ldr -> linear -> inv tonemap
         self.cubemap = inverse_tonemap(srgb_to_linear(cubemap)).contiguous()
-        # self.cubemap = cubemap.contiguous()
-        # self.cubemap = torch.ones_like(cubemap).contiguous()
-
+        
     # processing
     def get_mip(self, roughness: torch.Tensor) -> torch.Tensor:
         return torch.where(

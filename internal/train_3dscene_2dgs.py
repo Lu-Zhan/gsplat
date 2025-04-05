@@ -162,7 +162,7 @@ class Config:
     # Enable depth loss. (experimental)
     depth_loss: bool = False
     # Weight for depth loss
-    depth_lambda: float = 1e-1
+    depth_lambda: float = 1e-2
 
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
@@ -183,12 +183,13 @@ class Config:
     intrinsics_lambda: float = 5e-1
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-1
+    direct_normal_start_iter: int = 3_000
 
     # luzhan: add surface rendering as a regularizer
     surface_rendering_loss: bool = False
-    surface_rendering_lambda: float = 1e-1
+    surface_rendering_lambda: float = 5e-1
     irradiance_loss: bool = False
-    irradiance_lambda: float = 1e-1
+    irradiance_lambda: float = 5e-1
     surface_rendering_start_iter: int = 7000
 
     # Model for splatting.
@@ -635,56 +636,12 @@ class Runner:
                 distloss=False,
                 render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
             )[0][..., :3]   # [6, H, W, 3]
-
-            # color = torch.zeros_like(color)
-            # if i == 0:
-            #     color[..., 0] = 1.0
-            # elif i == 1:
-            #     color[..., 1] = 1.0
-            # elif i == 2:
-            #     color[..., 2] = 1.0
-            # elif i == 3:
-            #     color[..., 0] = 1.0
-            #     color[..., 1] = 1.0
-            # elif i == 4:
-            #     color[..., 0] = 1.0
-            #     color[..., 2] = 1.0
-            # elif i == 5:
-            #     color[..., 1] = 1.0
-            #     color[..., 2] = 1.0
             
             colors.append(color)
         
         colors = torch.cat(colors, dim=0)
         colors = torch.clamp(colors, 0.0, 1.0)
         self.light_model.update_cubemap(colors)
-    
-    # def render_envmap_fixed(self, point_xyz, c2w):
-    #     point_xyz = torch.cat([point_xyz, torch.tensor([1.]).to(point_xyz)], dim=-1)
-    #     point_xyz = point_xyz @ c2w[0].T
-
-    #     Ks, c2w_cubemaps = self.light_model.get_Ks_c2w(point_xyz[:3])
-
-    #     colors = []
-    #     for i, c2w_cubemap in enumerate(c2w_cubemaps):
-    #         color = self.rasterize_splats(
-    #             camtoworlds=c2w_cubemap[None, ...],
-    #             Ks=Ks[:1],
-    #             width=self.light_model.height,
-    #             height=self.light_model.height,
-    #             near_plane=0.02,
-    #             far_plane=self.cfg.far_plane,
-    #             image_ids=None,
-    #             render_mode="RGB",
-    #             distloss=False,
-    #             render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
-    #         )[0][..., :3]   # [6, H, W, 3]
-            
-    #         colors.append(color)
-        
-    #     colors = torch.cat(colors, dim=0)
-    #     colors = torch.clamp(colors, 0.0, 1.0)
-    #     self.light_model.update_cubemap(colors)
     
     def train(self):
         cfg = self.cfg
@@ -896,7 +853,7 @@ class Runner:
                 loss += intrinsics_loss * cfg.intrinsics_lambda
             
             if cfg.direct_normal_loss:
-                if step > cfg.normal_start_iter:
+                if step > cfg.direct_normal_start_iter:
                     curr_normal_lambda = cfg.direct_normal_lambda
                 else:
                     curr_normal_lambda = 0.0
@@ -913,7 +870,7 @@ class Runner:
                     depths_tensor=depths_org,
                     normals_tensor=normals_tensor,
                     albedo=intrinsics[..., :3],
-                    roughness=intrinsics[..., 3:4],
+                    roughness=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
                     metallic=intrinsics[..., 4:5],
                 )
 
@@ -948,6 +905,8 @@ class Runner:
             if step > cfg.surface_rendering_start_iter:
                 if cfg.surface_rendering_loss:
                     desc += f"surf loss={surface_rendering_loss.item():.4f}| "
+                if cfg.irradiance_loss:
+                    desc += f"irr loss={irradiance_loss.item():.4f}| "
             pbar.set_description(desc)
 
             if cfg.tb_every > 0 and step % cfg.tb_every == 0:
@@ -1231,7 +1190,7 @@ class Runner:
                 depths_tensor=depths_tensor,
                 normals_tensor=normals_tensor,
                 albedo=albedo,
-                roughness=roughness,
+                roughness=roughness * (1 - 0.04) + 0.04,
                 metallic=metallic,
             )
             
