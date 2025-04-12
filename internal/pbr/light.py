@@ -79,10 +79,10 @@ class CubemapLight():
     def get_Ks_c2w(self, point_xyz):
         return self.Ks.to(point_xyz), create_cubemap_c2w(pos=point_xyz).to(point_xyz)
 
-    def update_cubemap(self, cubemap):
+    def update_cubemap(self, cubemap, hdr_scaler=1.0):
         # cubemap is ldr -> linear -> inv tonemap
-        self.cubemap = inverse_tonemap(srgb_to_linear(cubemap)).contiguous()
-        
+        self.cubemap = inverse_tonemap(srgb_to_linear(cubemap)).contiguous() * hdr_scaler
+
     # processing
     def get_mip(self, roughness: torch.Tensor) -> torch.Tensor:
         return torch.where(

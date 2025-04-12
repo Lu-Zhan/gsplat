@@ -45,7 +45,7 @@ from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
 
 from geo_utils import transform_normals_to_image_coord, obtain_surface_position
-
+from losses import get_tv_loss
 
 @dataclass
 class Config:
@@ -192,6 +192,12 @@ class Config:
     irradiance_lambda: float = 5e-1
     surface_rendering_start_iter: int = 7000
 
+    # luzhan: add smoothness loss for normals and intrinsics
+    normal_tv_loss: bool = False
+    normal_tv_lambda: float = 1
+    intrinsics_tv_loss: bool = False
+    intrinsics_lambda: float = 1
+
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
 
@@ -323,8 +329,6 @@ def create_backgrpound_splats_with_optimizers(
         ("quats", torch.nn.Parameter(quats), 1e-3),
         ("means", points, 0),
         ("opacities", opacities, 0),
-        # ("means", torch.nn.Parameter(points), 0),
-        # ("opacities", torch.nn.Parameter(opacities), 0),
     ]
 
     colors = torch.logit(rgbs)  # [N, 3]
@@ -453,6 +457,9 @@ class Runner:
                     weight_decay=cfg.pose_opt_reg,
                 )
             ]
+        
+        self.hdr_scaler = torch.nn.Parameter(torch.tensor([0.], requires_grad=True).to(self.device))
+        self.hdr_scaler_optimizer = torch.optim.Adam([self.hdr_scaler], lr=1e-5)
 
         if cfg.pose_noise > 0.0:
             self.pose_perturb = CameraOptModule(len(self.trainset)).to(self.device)
@@ -641,7 +648,7 @@ class Runner:
         
         colors = torch.cat(colors, dim=0)
         colors = torch.clamp(colors, 0.0, 1.0)
-        self.light_model.update_cubemap(colors)
+        self.light_model.update_cubemap(colors, hdr_scaler=torch.exp(self.hdr_scaler))
     
     def train(self):
         cfg = self.cfg
@@ -762,9 +769,6 @@ class Runner:
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
                 depths_org = depths.clone()
-                # luzhan: formulate roughness, roughness = roughness * (rmax - rmin) + rmin from GS-IR
-                # rmax, rmin = 1.0, 0.04
-                # intrinsics[..., 3:4] = intrinsics[..., 3:4] * (rmax - rmin) + rmin
             else:
                 colors, intrinsics, depths = renders, None, None
 
@@ -846,6 +850,22 @@ class Runner:
                     curr_dist_lambda = 0.0
                 distloss = render_distort.mean()
                 loss += distloss * curr_dist_lambda
+            
+            if cfg.normals_tv_loss:
+                normals_tv_loss = get_tv_loss(
+                    gt_image=pixels[0].permute(2, 0, 1),
+                    prediction=normals[0].permute(2, 0, 1),
+                )
+
+                loss += normals_tv_loss * cfg.normals_tv_lambda
+            
+            if cfg.intrinsics_tv_loss:
+                intrinsics_tv_loss = get_tv_loss(
+                    gt_image=pixels[0].permute(2, 0, 1),
+                    prediction=intrinsics[0].permute(2, 0, 1),
+                )
+
+                loss += intrinsics_tv_loss * cfg.intrinsics_tv_lambda
 
             # luzhan: add more losses, including intrinsics loss, direct normal loss
             if cfg.intrinsics_loss:
@@ -862,7 +882,7 @@ class Runner:
                 direct_normal_loss = (1 - (normals_tensor * gt_normals).sum(dim=-1).mean())   
                 loss += direct_normal_loss * curr_normal_lambda
 
-            if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step > cfg.surface_rendering_start_iter:
+            if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step >= cfg.surface_rendering_start_iter:
                 pbr_result = self.surface_rendering(
                     Ks=Ks,
                     hw=(height, width),
@@ -877,17 +897,20 @@ class Runner:
                 irradiance = pbr_result["diffuse_light"][None, ...]
                 rendered_image = pbr_result["render_rgb"][None, ...]
 
-                if cfg.irradiance_loss:
-                    irradiance_loss = F.l1_loss(irradiance, gt_irradiance)
-                    loss += irradiance_loss * cfg.irradiance_lambda
-                
-                if cfg.surface_rendering_loss:
-                    surf_l1loss = F.l1_loss(rendered_image, pixels)
-                    surf_ssimloss = 1.0 - self.ssim(
-                        pixels.permute(0, 3, 1, 2), colors.permute(0, 3, 1, 2)
-                    )
-                    surface_rendering_loss = surf_l1loss * (1.0 - cfg.ssim_lambda) + surf_ssimloss * cfg.ssim_lambda
-                    loss += surface_rendering_loss * cfg.surface_rendering_lambda
+                if step == cfg.surface_rendering_start_iter:
+                    self.update_hdr_scaler(init_scaler=(pixels.mean() / (rendered_image.mean() + 1e-8)))
+                else:
+                    if cfg.irradiance_loss:
+                        irradiance_loss = F.l1_loss(irradiance, gt_irradiance)
+                        loss += irradiance_loss * cfg.irradiance_lambda
+                    
+                    if cfg.surface_rendering_loss:
+                        surf_l1loss = F.l1_loss(rendered_image, pixels)
+                        surf_ssimloss = 1.0 - self.ssim(
+                            pixels.permute(0, 3, 1, 2), colors.permute(0, 3, 1, 2)
+                        )
+                        surface_rendering_loss = surf_l1loss * (1.0 - cfg.ssim_lambda) + surf_ssimloss * cfg.ssim_lambda
+                        loss += surface_rendering_loss * cfg.surface_rendering_lambda
 
             if torch.isnan(loss):
                 pass
@@ -988,10 +1011,15 @@ class Runner:
             for optimizer in self.optimizers.values():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+
             # luzhan: optimize bg splats
             for optimizer in self.optimizers_bg.values():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+            # luzhan: optimize hdr scaler
+            self.hdr_scaler_optimizer.step()
+            self.hdr_scaler_optimizer.zero_grad(set_to_none=True)
+
             for optimizer in self.pose_optimizers:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -1016,6 +1044,8 @@ class Runner:
                     {
                         "step": step,
                         "splats": self.splats.state_dict(),
+                        "splats_bg": self.splats_bg.state_dict(),
+                        "hdr_scaler": self.hdr_scaler.data,
                     },
                     f"{self.ckpt_dir}/ckpt_{step}.pt",
                 )
@@ -1400,6 +1430,11 @@ class Runner:
         )
 
         return pbr_result
+    
+    def update_hdr_scaler(self, init_scaler):
+        self.hdr_scaler.data = torch.log(init_scaler).view((1,)).to(self.device)
+        print(f"Initial hdr scaler: {init_scaler}")
+
 
 def main(cfg: Config):
     runner = Runner(cfg)
@@ -1412,6 +1447,19 @@ def main(cfg: Config):
         ckpt = torch.load(cfg.ckpt, map_location=runner.device)
         for k in runner.splats.keys():
             runner.splats[k].data = ckpt["splats"][k]
+
+        # load hdr scaler and splats_bg
+        try:
+            runner.update_hdr_scaler(torch.exp(ckpt["hdr_scaler"]))
+        except:
+            print("hdr_scaler not found in checkpoint.")
+        
+        try:
+            for k in runner.splats_bg.keys():
+                runner.splats_bg[k].data = ckpt["splats_bg"][k]
+        except:
+            print("splats_bg not found in checkpoint.")
+            
         runner.eval(step=ckpt["step"])
         runner.render_traj(step=ckpt["step"])
     else:
