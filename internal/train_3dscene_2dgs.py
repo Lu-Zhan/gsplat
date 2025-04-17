@@ -19,8 +19,8 @@ import tyro
 import viser
 # from datasets.colmap import Dataset, Parser
 # luzhan: using colmap_with_intrinsics as dataloader
-from datasets.colmap_with_intrinsics import Dataset, Parser
-# from datasets.blender_with_intrinsics import Dataset, Parser
+# from datasets.colmap_with_intrinsics import Dataset, Parser
+from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor, gt
 from torch.utils.tensorboard import SummaryWriter
@@ -375,7 +375,7 @@ class Runner:
             factor=cfg.data_factor,
             normalize=True,
             test_every=cfg.test_every,
-            align_first_camera=True,
+            # align_first_camera=True,
         )
         self.trainset = Dataset(
             self.parser,
@@ -511,6 +511,7 @@ class Runner:
         width: int,
         height: int,
         render_with_bg: bool = False,
+        
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
         means = self.splats["means"]  # [N, 3]

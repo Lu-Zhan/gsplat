@@ -28,6 +28,7 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        **kwargs,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -116,6 +117,34 @@ class Parser:
         scene_center = np.mean(camera_locations, axis=0)
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
+
+
+        self.points, self.points_rgb = [], []
+        # add points 3d: points, points_rgb
+        for i in range(0, len(image_names), 16):
+            depths_path = self.image_paths[i].replace('samples-rgb', 'depths').replace('.png', '.exr')
+            depths = read_exr(depths_path, channel=1)
+            # depths = torch.from_numpy(depths).float()[..., None]
+            depths = depths[::2, ::2].reshape(-1, 1)   # (n, 1)
+
+            depths = 1 / (depths + 1e-8)
+            points_cam = np.concatenate([np.zeros_like(depths), np.zeros_like(depths), -depths, np.ones_like(depths)], axis=-1)# [n, 3+1]
+            
+            c2w = self.camtoworlds[i]
+            points = points_cam @ c2w.T # 4 @ 4x4 = 4
+            points = points[:, :3]
+
+            image_path = self.image_paths[i]
+            image = imageio.imread(image_path)[..., :3]
+            # image = torch.from_numpy(image).float()
+            image = image[::2, ::2]
+            points_rgb = image.reshape(-1, 3)
+
+            self.points.append(points)
+            self.points_rgb.append(points_rgb)
+        
+        self.points = np.concatenate(self.points, axis=0)
+        self.points_rgb = np.concatenate(self.points_rgb, axis=0)
 
 
 class Dataset:
