@@ -193,10 +193,10 @@ class Config:
     surface_rendering_start_iter: int = 7000
 
     # luzhan: add smoothness loss for normals and intrinsics
-    normal_tv_loss: bool = False
-    normal_tv_lambda: float = 1
+    normals_tv_loss: bool = False
+    normals_tv_lambda: float = 1
     intrinsics_tv_loss: bool = False
-    intrinsics_lambda: float = 1
+    intrinsics_tv_lambda: float = 1
 
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
@@ -543,6 +543,7 @@ class Runner:
         colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
         intrinsics = torch.sigmoid(self.splats["intrinsics"]) # [N, 5]
         colors = torch.cat([colors, intrinsics], dim=-1) # [N, 3+5]
+        backgrounds = torch.zeros_like(colors[:1])
 
         assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
 
@@ -583,6 +584,7 @@ class Runner:
                 packed=self.cfg.packed,
                 absgrad=self.cfg.absgrad,
                 sparse_grad=self.cfg.sparse_grad,
+                backgrounds=backgrounds,
                 **kwargs,
             )
         elif self.model_type == "2dgs-inria":
@@ -680,7 +682,7 @@ class Runner:
             self.trainset,
             batch_size=cfg.batch_size,
             shuffle=True,
-            num_workers=27,
+            num_workers=48,
             persistent_workers=True,
             pin_memory=True,
         )
@@ -917,47 +919,47 @@ class Runner:
                 pass
             loss.backward()
 
-            desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
+            desc = f"loss={loss.data:.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
-                desc += f"dep loss={depthloss.item():.4f}| "
+                desc += f"dep loss={depthloss.data:.4f}| "
             if cfg.dist_loss:
-                desc += f"dist loss={distloss.item():.4f}"
+                desc += f"dist loss={distloss.data:.4f}"
             if cfg.pose_opt and cfg.pose_noise:
                 # monitor the pose error if we inject noise
                 pose_err = F.l1_loss(camtoworlds_gt, camtoworlds)
-                desc += f"pose err={pose_err.item():.6f}| "
+                desc += f"pose err={pose_err.data:.6f}| "
             if step > cfg.surface_rendering_start_iter:
                 if cfg.surface_rendering_loss:
-                    desc += f"surf loss={surface_rendering_loss.item():.4f}| "
+                    desc += f"surf loss={surface_rendering_loss.data:.4f}| "
                 if cfg.irradiance_loss:
-                    desc += f"irr loss={irradiance_loss.item():.4f}| "
+                    desc += f"irr loss={irradiance_loss.data:.4f}| "
             pbar.set_description(desc)
 
             if cfg.tb_every > 0 and step % cfg.tb_every == 0:
                 mem = torch.cuda.max_memory_allocated() / 1024**3
-                self.writer.add_scalar("train/loss", loss.item(), step)
-                self.writer.add_scalar("train/l1loss", l1loss.item(), step)
-                self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
+                self.writer.add_scalar("train/loss", loss.data, step)
+                self.writer.add_scalar("train/l1loss", l1loss.data, step)
+                self.writer.add_scalar("train/ssimloss", ssimloss.data, step)
                 self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
                 self.writer.add_scalar("train/mem", mem, step)
                 if cfg.depth_loss:
-                    self.writer.add_scalar("train/depthloss", depthloss.item(), step)
+                    self.writer.add_scalar("train/depthloss", depthloss.data, step)
                 if cfg.normal_loss:
-                    self.writer.add_scalar("train/normalloss", normalloss.item(), step)
+                    self.writer.add_scalar("train/normalloss", normalloss.data, step)
                 if cfg.dist_loss:
-                    self.writer.add_scalar("train/distloss", distloss.item(), step)
+                    self.writer.add_scalar("train/distloss", distloss.data, step)
                 
                 # luzhan: add more losses, including intrinsics loss, direct normal loss
                 if cfg.intrinsics_loss:
-                    self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.item(), step)
+                    self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.data, step)
                 if cfg.direct_normal_loss:
-                    self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.item(), step)
+                    self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.data, step)
                 
                 if step > cfg.surface_rendering_start_iter:
                     if cfg.irradiance_loss:
-                        self.writer.add_scalar("train/irradiance_loss", irradiance_loss.item(), step)
+                        self.writer.add_scalar("train/irradiance_loss", irradiance_loss.data, step)
                     if cfg.surface_rendering_loss:
-                        self.writer.add_scalar("train/surface_rendering_loss", surface_rendering_loss.item(), step)    
+                        self.writer.add_scalar("train/surface_rendering_loss", surface_rendering_loss.data, step)    
 
                 if cfg.tb_save_image:
                     canvas = (
@@ -1075,7 +1077,7 @@ class Runner:
         device = self.device
 
         valloader = torch.utils.data.DataLoader(
-            self.valset, batch_size=1, shuffle=False, num_workers=1
+            self.valset, batch_size=1, shuffle=False, num_workers=32,
         )
         ellipse_time = 0
         metrics = {"psnr": [], "ssim": [], "lpips": [], "psnr_surf": [], "ssim_surf": [], "lpips_surf": []}
@@ -1144,7 +1146,7 @@ class Runner:
             # align the median of depths
             gt_median = np.median(gt_depths)
             excepted_median = np.median(excepted_depths)
-            excepted_depths = excepted_depths * gt_median / excepted_median
+            excepted_depths = excepted_depths * gt_median / (excepted_median + 1e-8)
 
             canvas = np.concatenate([gt_depths, excepted_depths], axis=1)
 
@@ -1279,14 +1281,14 @@ class Runner:
         lpips_surf = torch.stack(metrics["lpips_surf"]).mean()
 
         print(
-            f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
+            f"PSNR: {psnr.data:.3f}, SSIM: {ssim.data:.4f}, LPIPS: {lpips.data:.3f} "
             f"Time: {ellipse_time:.3f}s/image "
             f"Number of GS: {len(self.splats['means'])}"
         )
 
         print(
             f"==Surface Rendering==",
-            f"PSNR: {psnr_surf.item():.3f}, SSIM: {ssim_surf.item():.4f}, LPIPS: {lpips_surf.item():.3f}",
+            f"PSNR: {psnr_surf.data:.3f}, SSIM: {ssim_surf.data:.4f}, LPIPS: {lpips_surf.data:.3f}",
         )
         # save stats as json
         stats = {
