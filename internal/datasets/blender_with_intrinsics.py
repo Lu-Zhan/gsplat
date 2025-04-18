@@ -9,6 +9,8 @@ from PIL import Image
 import imageio.v2 as imageio
 import numpy as np
 import torch
+import torch.nn.functional as F
+import trimesh
 
 from .load_image import read_exr
 from .normalize import (
@@ -55,7 +57,7 @@ class Parser:
             image_path = frame['file_path']
             image_names.append(image_path)
             w2c = np.array(frame['transform_matrix'])
-            w2c = np.concatenate([w2c, bottom], axis=0)
+            # w2c = np.concatenate([w2c, bottom], axis=0)
 
             params = np.empty(0, dtype=np.float32)
             # camtype = "perspective"
@@ -118,34 +120,42 @@ class Parser:
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
 
+        # load ply
+        pc = trimesh.load(os.path.join(data_dir, 'points.ply'))
+        self.points = np.array(pc.vertices)
+        self.points_rgb = np.array(pc.colors)[:, :3]
 
-        self.points, self.points_rgb = [], []
-        # add points 3d: points, points_rgb
-        for i in range(0, len(image_names), 16):
-            depths_path = self.image_paths[i].replace('samples-rgb', 'depths').replace('.png', '.exr')
-            depths = read_exr(depths_path, channel=1)
-            # depths = torch.from_numpy(depths).float()[..., None]
-            depths = depths[::2, ::2].reshape(-1, 1)   # (n, 1)
 
-            depths = 1 / (depths + 1e-8)
-            points_cam = np.concatenate([np.zeros_like(depths), np.zeros_like(depths), -depths, np.ones_like(depths)], axis=-1)# [n, 3+1]
-            
-            c2w = self.camtoworlds[i]
-            points = points_cam @ c2w.T # 4 @ 4x4 = 4
-            points = points[:, :3]
+def get_canonical_rays(Ks, hw):
+    cen_x = Ks[0, -1]
+    cen_y = Ks[1, -1]
+    focal_x = Ks[0, 0]
+    focal_y = Ks[1, 1]
 
-            image_path = self.image_paths[i]
-            image = imageio.imread(image_path)[..., :3]
-            # image = torch.from_numpy(image).float()
-            image = image[::2, ::2]
-            points_rgb = image.reshape(-1, 3)
+    h, w = hw
 
-            self.points.append(points)
-            self.points_rgb.append(points_rgb)
-        
-        self.points = np.concatenate(self.points, axis=0)
-        self.points_rgb = np.concatenate(self.points_rgb, axis=0)
+    x, y = torch.meshgrid(
+        torch.arange(w).to(Ks),
+        torch.arange(h).to(Ks),
+        indexing="xy",
+    )
+    x = x.flatten()  # [H * W]
+    y = y.flatten()  # [H * W]
+    camera_dirs = F.pad(
+        torch.stack(
+            [
+                (x - cen_x + 0.5) / focal_x,
+                (y - cen_y + 0.5) / focal_y,
+            ],
+            dim=-1,
+        ),
+        (0, 1),
+        value=-1.0,
+    )  # [H * W, 3]
+    
+    camera_dirs = F.normalize(camera_dirs, dim=-1)
 
+    return camera_dirs.reshape((h, w, 3))
 
 class Dataset:
     """A simple dataset class."""

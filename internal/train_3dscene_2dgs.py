@@ -19,8 +19,8 @@ import tyro
 import viser
 # from datasets.colmap import Dataset, Parser
 # luzhan: using colmap_with_intrinsics as dataloader
-# from datasets.colmap_with_intrinsics import Dataset, Parser
-from datasets.blender_with_intrinsics import Dataset, Parser
+from datasets.colmap_with_intrinsics import Dataset, Parser
+# from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor, gt
 from torch.utils.tensorboard import SummaryWriter
@@ -197,6 +197,9 @@ class Config:
     normals_tv_lambda: float = 1
     intrinsics_tv_loss: bool = False
     intrinsics_tv_lambda: float = 1
+
+    # luzhan: if evaluate on train dataset
+    eval_trainset: bool = False
 
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
@@ -381,7 +384,7 @@ class Runner:
             self.parser,
             split="train",
             patch_size=cfg.patch_size,
-            load_depths=cfg.depth_loss,
+            load_depths=True,
             load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
         )
         self.valset = Dataset(
@@ -712,10 +715,10 @@ class Runner:
             )
             image_ids = data["image_id"].to(device)
             if cfg.depth_loss:
-                # points = data["points"].to(device)  # [1, M, 2]
-                # depths_gt = data["depths"].to(device)  # [1, M]
+                points = data["points"].to(device)  # [1, M, 2]
+                depths_gt = data["depths"].to(device)  # [1, M]
 
-                gt_depths = data["depths"].to(device)   # [1, H, W, 1]
+                # gt_depths = data["depths"].to(device)   # [1, H, W, 1]
             
             # luzhan: load gt intrinsics and normals
             if cfg.intrinsics_loss:
@@ -798,38 +801,38 @@ class Runner:
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:
-                # # query depths from depth map
-                # points = torch.stack(
-                #     [
-                #         points[:, :, 0] / (width - 1) * 2 - 1,
-                #         points[:, :, 1] / (height - 1) * 2 - 1,
-                #     ],
-                #     dim=-1,
-                # )  # normalize to [-1, 1]
-                # grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                # depths = F.grid_sample(
-                #     depths.permute(0, 3, 1, 2), grid, align_corners=True
-                # )  # [1, 1, M, 1]
-                # depths = depths.squeeze(3).squeeze(1)  # [1, M]
-                # # calculate loss in disparity space
-                # disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                # disp_gt = 1.0 / depths_gt  # [1, M]
-                # depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
-                # loss += depthloss * cfg.depth_lambda
-
-                # luzhan: new depth loss
-                gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
-
-                mask_depths = depths > 0.0
-                depths = torch.where(mask_depths, 1 / depths, torch.zeros_like(depths))
-                depths = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
-
-                gt_median = torch.median(gt_depths[gt_depths > 0.0])
-                median = torch.median(depths[depths > 0.0])
-                depths = depths * gt_median / (median + 1e-8)
-
-                depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
+                # query depths from depth map
+                points = torch.stack(
+                    [
+                        points[:, :, 0] / (width - 1) * 2 - 1,
+                        points[:, :, 1] / (height - 1) * 2 - 1,
+                    ],
+                    dim=-1,
+                )  # normalize to [-1, 1]
+                grid = points.unsqueeze(2)  # [1, M, 1, 2]
+                depths = F.grid_sample(
+                    depths.permute(0, 3, 1, 2), grid, align_corners=True
+                )  # [1, 1, M, 1]
+                depths = depths.squeeze(3).squeeze(1)  # [1, M]
+                # calculate loss in disparity space
+                disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
+                disp_gt = 1.0 / depths_gt  # [1, M]
+                depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
+
+                # # luzhan: new depth loss
+                # gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+
+                # mask_depths = depths > 0.0
+                # depths = torch.where(mask_depths, 1 / depths, torch.zeros_like(depths))
+                # depths = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
+
+                # gt_median = torch.median(gt_depths[gt_depths > 0.0])
+                # median = torch.median(depths[depths > 0.0])
+                # depths = depths * gt_median / (median + 1e-8)
+
+                # depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
+                # loss += depthloss * cfg.depth_lambda
 
             if cfg.normal_loss:
                 if step > cfg.normal_start_iter:
@@ -1076,8 +1079,9 @@ class Runner:
         cfg = self.cfg
         device = self.device
 
+        dataset = self.trainset if cfg.eval_trainset else self.valset
         valloader = torch.utils.data.DataLoader(
-            self.valset, batch_size=1, shuffle=False, num_workers=32,
+            dataset, batch_size=1, shuffle=False, num_workers=1,
         )
         ellipse_time = 0
         metrics = {"psnr": [], "ssim": [], "lpips": [], "psnr_surf": [], "ssim_surf": [], "lpips_surf": []}
@@ -1135,20 +1139,20 @@ class Runner:
             # render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
             # render_median = render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
-            gt_depths = data["depths"]
-            gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
-            gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+            # gt_depths = data["depths"]
+            # gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+            # gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
             excepted_depths = torch.where(excepted_depths > 0.0, 1 / excepted_depths, torch.zeros_like(excepted_depths))
             excepted_depths = (excepted_depths - excepted_depths.min()) / (excepted_depths.max() - excepted_depths.min())
             excepted_depths = excepted_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
             # align the median of depths
-            gt_median = np.median(gt_depths)
-            excepted_median = np.median(excepted_depths)
-            excepted_depths = excepted_depths * gt_median / (excepted_median + 1e-8)
+            # gt_median = np.median(gt_depths)
+            # excepted_median = np.median(excepted_depths)
+            # excepted_depths = excepted_depths * gt_median / (excepted_median + 1e-8)
 
-            canvas = np.concatenate([gt_depths, excepted_depths], axis=1)
+            canvas = np.concatenate([excepted_depths], axis=1)
 
             save_path = f"{curr_render_dir}/depths/val_{i:04d}_depth_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)

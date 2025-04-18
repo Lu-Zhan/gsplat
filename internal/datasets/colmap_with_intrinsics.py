@@ -65,7 +65,7 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
-        align_first_camera: bool = True,
+        align_first_camera: bool = False,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -112,29 +112,29 @@ class Parser:
             Ks_dict[camera_id] = K
 
             # Get distortion parameters.
-            # type_ = cam.camera_type
-            type_ = 0
+            type_ = cam.camera_type
+            # type_ = 0
             if type_ == 0 or type_ == "SIMPLE_PINHOLE":
                 params = np.empty(0, dtype=np.float32)
                 camtype = "perspective"
-            # elif type_ == 1 or type_ == "PINHOLE":
-            #     params = np.empty(0, dtype=np.float32)
-            #     camtype = "perspective"
-            # if type_ == 2 or type_ == "SIMPLE_RADIAL":
-            #     params = np.array([cam.k1, 0.0, 0.0, 0.0], dtype=np.float32)
-            #     camtype = "perspective"
-            # elif type_ == 3 or type_ == "RADIAL":
-            #     params = np.array([cam.k1, cam.k2, 0.0, 0.0], dtype=np.float32)
-            #     camtype = "perspective"
-            # elif type_ == 4 or type_ == "OPENCV":
-            #     params = np.array([cam.k1, cam.k2, cam.p1, cam.p2], dtype=np.float32)
-            #     camtype = "perspective"
-            # elif type_ == 5 or type_ == "OPENCV_FISHEYE":
-            #     params = np.array([cam.k1, cam.k2, cam.k3, cam.k4], dtype=np.float32)
-            #     camtype = "fisheye"
-            # assert (
-            #     camtype == "perspective" or camtype == "fisheye"
-            # ), f"Only perspective and fisheye cameras are supported, got {type_}"
+            elif type_ == 1 or type_ == "PINHOLE":
+                params = np.empty(0, dtype=np.float32)
+                camtype = "perspective"
+            if type_ == 2 or type_ == "SIMPLE_RADIAL":
+                params = np.array([cam.k1, 0.0, 0.0, 0.0], dtype=np.float32)
+                camtype = "perspective"
+            elif type_ == 3 or type_ == "RADIAL":
+                params = np.array([cam.k1, cam.k2, 0.0, 0.0], dtype=np.float32)
+                camtype = "perspective"
+            elif type_ == 4 or type_ == "OPENCV":
+                params = np.array([cam.k1, cam.k2, cam.p1, cam.p2], dtype=np.float32)
+                camtype = "perspective"
+            elif type_ == 5 or type_ == "OPENCV_FISHEYE":
+                params = np.array([cam.k1, cam.k2, cam.k3, cam.k4], dtype=np.float32)
+                camtype = "fisheye"
+            assert (
+                camtype == "perspective" or camtype == "fisheye"
+            ), f"Only perspective and fisheye cameras are supported, got {type_}"
 
             params_dict[camera_id] = params
             imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
@@ -142,7 +142,7 @@ class Parser:
         print(
             f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
         )
-        print('Assume camera type is SIMPLE_PINHOLE')
+        # print('Assume camera type is SIMPLE_PINHOLE')
 
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
@@ -201,8 +201,9 @@ class Parser:
             image_dir_suffix = f"_{factor}"
         else:
             image_dir_suffix = ""
-        colmap_image_dir = os.path.join(data_dir, "images")
-        image_dir = os.path.join(data_dir, "images" + image_dir_suffix)
+        image_folder_name = "samples-rgb"
+        colmap_image_dir = os.path.join(data_dir, image_folder_name)
+        image_dir = os.path.join(data_dir, image_folder_name + image_dir_suffix)
         for d in [image_dir, colmap_image_dir]:
             if not os.path.exists(d):
                 raise ValueError(f"Image folder {d} does not exist.")
@@ -373,7 +374,8 @@ class Dataset:
         self.load_depths = load_depths
         indices = np.arange(len(self.parser.image_names))
         if split == "train":
-            self.indices = indices[indices % self.parser.test_every != 0]
+            # self.indices = indices[indices % self.parser.test_every != 0]
+            self.indices = indices
         else:
             self.indices = indices[indices % self.parser.test_every == 0]
         
@@ -424,11 +426,12 @@ class Dataset:
         # luzhan: add intrinsics
         if self.load_intrinsics:
             # image = imageio.imread(self.parser.image_paths[index])[..., :3]
-            albedo_path = self.parser.image_paths[index].replace('images', 'intrinsics/albedo_maps').replace('.png', '.exr')
-            normal_path = self.parser.image_paths[index].replace('images', 'intrinsics/normal_maps').replace('.png', '.exr')
-            roughness_path = self.parser.image_paths[index].replace('images', 'intrinsics/roughness_maps').replace('.png', '.exr')
-            metallic_path = self.parser.image_paths[index].replace('images', 'intrinsics/metallic_maps').replace('.png', '.exr')
-            irrdiance_path = self.parser.image_paths[index].replace('images', 'intrinsics/irradiance_maps').replace('.png', '.exr')
+            image_folder_name = "samples-rgb"
+            albedo_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/albedo_maps').replace('.png', '.exr')
+            normal_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/normal_maps').replace('.png', '.exr')
+            roughness_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/roughness_maps').replace('.png', '.exr')
+            metallic_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/metallic_maps').replace('.png', '.exr')
+            irrdiance_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/irradiance_maps').replace('.png', '.exr')
 
             albedo = read_exr(albedo_path)
             normals = read_exr(normal_path)
@@ -463,34 +466,34 @@ class Dataset:
             data['intrinsics'] = intrinsics   
 
         if self.load_depths:
-            # # projected points to image plane to get depths
-            # worldtocams = np.linalg.inv(camtoworlds)
-            # image_name = self.parser.image_names[index]
-            # point_indices = self.parser.point_indices[image_name]
-            # points_world = self.parser.points[point_indices]
-            # points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
-            # points_proj = (K @ points_cam.T).T
-            # points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
-            # depths = points_cam[:, 2]  # (M,)
-            # # filter out points outside the image
-            # selector = (
-            #     (points[:, 0] >= 0)
-            #     & (points[:, 0] < image.shape[1])
-            #     & (points[:, 1] >= 0)
-            #     & (points[:, 1] < image.shape[0])
-            #     & (depths > 0)
-            # )
-            # points = points[selector]
-            # depths = depths[selector]
-            # data["points"] = torch.from_numpy(points).float()
-            # data["depths"] = torch.from_numpy(depths).float()
+            # projected points to image plane to get depths
+            worldtocams = np.linalg.inv(camtoworlds)
+            image_name = self.parser.image_names[index]
+            point_indices = self.parser.point_indices[image_name]
+            points_world = self.parser.points[point_indices]
+            points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
+            points_proj = (K @ points_cam.T).T
+            points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
+            depths = points_cam[:, 2]  # (M,)
+            # filter out points outside the image
+            selector = (
+                (points[:, 0] >= 0)
+                & (points[:, 0] < image.shape[1])
+                & (points[:, 1] >= 0)
+                & (points[:, 1] < image.shape[0])
+                & (depths > 0)
+            )
+            points = points[selector]
+            depths = depths[selector]
+            data["points"] = torch.from_numpy(points).float()
+            data["depths"] = torch.from_numpy(depths).float()
 
-            # further load depth maps
-            depthmap_path = self.parser.image_paths[index].replace('images', 'depths').replace('.png', '.exr')
-            depthmaps = read_exr(depthmap_path, channel=1)
-            depthmaps = torch.from_numpy(depthmaps).float()[..., None]
+            # # further load depth maps
+            # depthmap_path = self.parser.image_paths[index].replace('images', 'depths').replace('.png', '.exr')
+            # depthmaps = read_exr(depthmap_path, channel=1)
+            # depthmaps = torch.from_numpy(depthmaps).float()[..., None]
 
-            data['depths'] = depthmaps
+            # data['depths'] = depthmaps
 
 
         return data

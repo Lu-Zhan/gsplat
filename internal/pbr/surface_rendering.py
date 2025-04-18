@@ -36,9 +36,6 @@ def get_canonical_rays(Ks, hw):
         (0, 1),
         value=1.0,
     )  # [H * W, 3]
-
-    # camera_dirs[..., 1] *= -1   # to match the cubemap coordinate system
-    # camera_dirs[..., 0] *= -1
     
     camera_dirs = F.normalize(camera_dirs, dim=-1)
 
