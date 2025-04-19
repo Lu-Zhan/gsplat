@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from .shade import pbr_shading, get_brdf_lut
-from load_image import tonemap
+from utils.load_image import tonemap
 from .shade import linear_to_srgb
 
 

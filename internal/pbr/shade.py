@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 # from .light import CubemapLight
-from load_image import tonemap
+from utils.load_image import tonemap
 
 
 # Lazarov 2013, "Getting More Physical in Call of Duty: Black Ops II"

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from typing import List, Optional
 
-from load_image import tonemap, inverse_tonemap
+from utils.load_image import tonemap, inverse_tonemap
 from .renderutils import diffuse_cubemap, specular_cubemap
 from .cubemap import create_cubemap_c2w
 from .shade import linear_to_srgb, srgb_to_linear
