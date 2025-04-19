@@ -1,4 +1,4 @@
-import enum
+import wandb
 import json
 import math
 import os
@@ -371,6 +371,13 @@ class Runner:
 
         # Tensorboard
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
+
+        # wandb
+        wandb.init(
+            project="scene_gen",
+            name=os.path.basename(cfg.result_dir),
+            sync_tensorboard=True,
+        )
 
         # Load data: Training data should contain initial points and colors.
         self.parser = Parser(
@@ -1134,6 +1141,7 @@ class Runner:
             save_path = f"{curr_render_dir}/images/val_{i:04d}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
+            if i == 0: wandb.log({"val/colors": wandb.Image((canvas * 255).astype(np.uint8))})
 
             # write depths
             # render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
@@ -1219,6 +1227,7 @@ class Runner:
             save_path = f"{curr_render_dir}/intrinsics/val_{i:04d}_intrinsics_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
+            if i == 0: wandb.log({"val/intrinsics": wandb.Image((canvas * 255).astype(np.uint8))})
 
             pbr_result = self.surface_rendering(
                 Ks=Ks,
@@ -1370,7 +1379,7 @@ class Runner:
         # save to video
         video_dir = f"{cfg.result_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
-        writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
+        writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=5)
         for canvas in canvas_all:
             writer.append_data(canvas)
         writer.close()
