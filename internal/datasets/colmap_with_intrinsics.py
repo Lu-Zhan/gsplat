@@ -1,5 +1,6 @@
 import os
 import json
+import trimesh
 from Imath import point
 from tqdm import tqdm
 from typing import Any, Dict, List, Optional
@@ -54,6 +55,11 @@ def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
         )
         imageio.imwrite(resized_path, resized_image)
     return resized_dir
+
+
+def save_to_ply(points, rgbs):
+    pc = trimesh.PointCloud(points, colors=rgbs)
+    pc.export("test.ply", "ply")
 
 
 class Parser:
@@ -355,6 +361,8 @@ class Parser:
         scene_center = np.mean(camera_locations, axis=0)
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
+
+        # save_to_ply(points, points_rgb)
 
 
 class Dataset:

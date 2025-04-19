@@ -105,11 +105,11 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     Ks, c2w_cubemaps = light_model.get_Ks_c2w(point_xyz)
 
     # rotate c2w to align with camera forward direction
-    # ref_w2c = torch.linalg.inv(c2w[0])
+    ref_w2c = torch.linalg.inv(c2w[0])
 
     for i, c2w_cubemap in enumerate(c2w_cubemaps):
-        # w2c = torch.linalg.inv(c2w_cubemap.clone())
-        w2c = c2w[0] @ c2w_cubemap
+        w2c = torch.linalg.inv(c2w_cubemap.clone())
+        w2c = w2c @ ref_w2c
 
         c2w_cubemaps[i] = torch.linalg.inv(w2c)
 
