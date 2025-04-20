@@ -13,8 +13,8 @@ import torch
 import torch.nn.functional as F
 import tqdm
 
-from datasets.colmap_with_intrinsics import Dataset, Parser
-# from datasets.blender_with_intrinsics import Dataset, Parser
+# from datasets.colmap_with_intrinsics import Dataset, Parser
+from datasets.blender_with_intrinsics import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
@@ -746,7 +746,7 @@ class Runner:
   
             # write alphas
             alphas = alphas.repeat(1, 1, 1, 3).squeeze(0).detach().cpu().numpy()
-            alphas = (alphas - np.min(alphas)) / (np.max(alphas) - np.min(alphas))
+            alphas = (alphas - np.min(alphas)) / (np.max(alphas) - np.min(alphas) + 1e-8)
             alphas = (alphas * 255).astype(np.uint8)
             save_path = f"{curr_render_dir}/alphas/val_{i:04d}_alphas_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -901,7 +901,10 @@ class Runner:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 render_mode="RGB+ED",
+                render_with_bg=cfg.render_with_bg,
+                splats_bg=self.splats_bg if cfg.render_with_bg else None,
             )  # [1, H, W, 4]
+
             colors = torch.clamp(renders[0, ..., 0:3], 0.0, 1.0)  # [H, W, 3]
             depths = renders[0, ..., -1:]  # [H, W, 1]
             depths = torch.where(depths > 0, 1 / depths, torch.zeros_like(depths))

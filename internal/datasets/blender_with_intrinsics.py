@@ -14,10 +14,10 @@ import trimesh
 
 from .load_image import read_exr
 from .normalize import (
-    # align_principle_axes,
+    align_principle_axes,
     similarity_from_cameras,
     transform_cameras,
-    # transform_points,
+    transform_points,
 )
 
 
@@ -49,10 +49,6 @@ class Parser:
         mask_dict = dict()
         bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
 
-        height, width = frames[0]['h'], frames[0]['w']
-        cx, cy = frames[0]['cx'], frames[0]['cy']
-        fx, fy = frames[0]['fl_x'], frames[0]['fl_y']
-
         for idx, frame in enumerate(frames):
             image_path = frame['file_path']
             image_names.append(image_path)
@@ -61,6 +57,10 @@ class Parser:
 
             params = np.empty(0, dtype=np.float32)
             # camtype = "perspective"
+
+            height, width = int(frame['h']), int(frame['w'])
+            cx, cy = int(frame['cx']), int(frame['cy'])
+            fx, fy = float(frame['fl_x']), float(frame['fl_y'])
 
             w2c_mats.append(w2c)
             camera_ids.append(idx)
@@ -96,11 +96,22 @@ class Parser:
         image_dir = data_dir
         image_paths = [os.path.join(image_dir, f) for f in image_names]
 
+        # load ply
+        pc = trimesh.load(os.path.join(data_dir, 'points.ply'))
+        points = np.array(pc.vertices)
+        points_rgb = np.array(pc.colors)[:, :3]
+        
         # Normalize the world space.
         if normalize:
             T1 = similarity_from_cameras(camtoworlds)
             camtoworlds = transform_cameras(T1, camtoworlds)
-            transform = T1
+            points = transform_points(T1, points)
+
+            T2 = align_principle_axes(points)
+            camtoworlds = transform_cameras(T2, camtoworlds)
+            points = transform_points(T2, points)
+
+            transform = T2 @ T1
         else:
             transform = np.eye(4)
 
@@ -114,16 +125,14 @@ class Parser:
         self.mask_dict = mask_dict  # Dict of camera_id -> mask
         self.transform = transform  # np.ndarray, (4, 4)
 
+        self.points = points  # np.ndarray, (num_points, 3)
+        self.points_rgb = points_rgb  # np.ndarray, (num_points, 3)
+
         # size of the scene measured by cameras
         camera_locations = camtoworlds[:, :3, 3]
         scene_center = np.mean(camera_locations, axis=0)
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
-
-        # load ply
-        pc = trimesh.load(os.path.join(data_dir, 'points.ply'))
-        self.points = np.array(pc.vertices)
-        self.points_rgb = np.array(pc.colors)[:, :3]
 
 
 def get_canonical_rays(Ks, hw):
@@ -222,14 +231,15 @@ class Dataset:
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
         
+        image_dir_name = 'images'
         # luzhan: add intrinsics
         if self.load_intrinsics:
             # image = imageio.imread(self.parser.image_paths[index])[..., :3]
-            albedo_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/albedo_maps').replace('.png', '.exr')
-            normal_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/normal_maps').replace('.png', '.exr')
-            roughness_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/roughness_maps').replace('.png', '.exr')
-            metallic_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/metallic_maps').replace('.png', '.exr')
-            irrdiance_path = self.parser.image_paths[index].replace('samples-rgb', 'intrinsics/irradiance_maps').replace('.png', '.exr')
+            albedo_path = self.parser.image_paths[index].replace(image_dir_name, 'intrinsics/albedo_maps').replace('.png', '.exr')
+            normal_path = self.parser.image_paths[index].replace(image_dir_name, 'intrinsics/normal_maps').replace('.png', '.exr')
+            roughness_path = self.parser.image_paths[index].replace(image_dir_name, 'intrinsics/roughness_maps').replace('.png', '.exr')
+            metallic_path = self.parser.image_paths[index].replace(image_dir_name, 'intrinsics/metallic_maps').replace('.png', '.exr')
+            irrdiance_path = self.parser.image_paths[index].replace(image_dir_name, 'intrinsics/irradiance_maps').replace('.png', '.exr')
 
             albedo = read_exr(albedo_path)
             normals = read_exr(normal_path)
@@ -265,9 +275,9 @@ class Dataset:
 
         if self.load_depths:
             # image = imageio.imread(self.parser.image_paths[index])[..., :3]
-            depths_path = self.parser.image_paths[index].replace('samples-rgb', 'depths').replace('.png', '.exr')
-            depths = read_exr(depths_path, channel=1)
-            depths = torch.from_numpy(depths).float()[..., None]
+            depths_path = self.parser.image_paths[index].replace(image_dir_name, 'depths').replace('.png', '.npy')
+            depths = np.load(depths_path)
+            depths = torch.from_numpy(depths).float()
 
             data['depths'] = depths
 
