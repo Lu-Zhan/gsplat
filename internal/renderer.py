@@ -22,6 +22,7 @@ def rasterize_splats(
         packed=False,
         absgrad=False,
         sparse_grad=False,
+        filter_3D=None,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
     means = splats["means"]  # [N, 3]
@@ -63,6 +64,9 @@ def rasterize_splats(
         scales = torch.cat([scales, scales_bg], dim=0)
         opacities = torch.cat([opacities, opacities_bg], dim=0)
         colors = torch.cat([colors, colors_bg], dim=0)
+    
+    if filter_3D is not None:
+        scales, opacities = get_scaling_opacity_with_3D_filter(scales, opacities, filter_3D)
 
     (
         render_colors,
@@ -113,6 +117,12 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
 
         c2w_cubemaps[i] = torch.linalg.inv(w2c)
 
+    # compute filter3D
+    means = splats["means"]  # [N, 3]
+    if render_with_bg:
+        means = torch.cat([means, splats_bg["means"]], dim=0)
+    filter_3D = compute_3D_filter(means, Ks, c2w_cubemaps)
+
     colors = []
     for i, c2w_cubemap in enumerate(c2w_cubemaps):
         color = rasterize_splats(
@@ -129,6 +139,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
             render_mode="RGB",
             distloss=False,
             render_with_bg=render_with_bg, # whether to render with bg splats
+            filter_3D=filter_3D,
         )[0][..., :3]   # [6, H, W, 3]
         
         colors.append(color)
@@ -191,3 +202,75 @@ def render_reflection(
     )
 
     return pbr_result
+
+
+@torch.no_grad()
+def compute_3D_filter(xyz, Ks, cam2worlds):
+    print("Computing 3D filter")
+    xyz = torch.cat([xyz, torch.ones_like(xyz[..., :1])], dim=-1)
+    distance = torch.ones((xyz.shape[0]), device=xyz.device) * 100000.0
+    valid_points = torch.zeros((xyz.shape[0]), device=xyz.device, dtype=torch.bool)
+    
+    # we should use the focal length of the highest resolution camera
+    focal_length = 0.
+
+    for c2w, K in zip(cam2worlds, Ks):
+        fx = K[0, 0]
+        fy = K[1, 1]
+        cx = K[0, 2]
+        cy = K[1, 2]
+
+        h = cy * 2
+        w = cx * 2
+
+        w2c = torch.linalg.inv(c2w)
+        xyz_cam = xyz @ w2c.T
+        xyz_cam = xyz_cam[..., :3]
+        # xyz_to_cam = torch.norm(xyz_cam, dim=1)
+        
+        # project to screen space
+        valid_depth = xyz_cam[:, 2] > 0.2
+        
+        x, y, z = xyz_cam[:, 0], xyz_cam[:, 1], xyz_cam[:, 2]
+        z = torch.clamp(z, min=0.001)
+        
+        x = x / z * fx + w / 2.0
+        y = y / z * fy + h / 2.0
+     
+        # use similar tangent space filtering as in the paper
+        in_screen = torch.logical_and(
+            torch.logical_and(
+                x >= -0.15 * w, x <= w * 1.15
+            ), 
+            torch.logical_and(
+                y >= -0.15 * h, y <= 1.15 * h
+            )
+        )
+        
+        valid = torch.logical_and(valid_depth, in_screen)
+        
+        # distance[valid] = torch.min(distance[valid], xyz_to_cam[valid])
+        distance[valid] = torch.min(distance[valid], z[valid])
+        valid_points = torch.logical_or(valid_points, valid)
+        if focal_length < fx:
+            focal_length = fx
+    
+    if valid_points.sum() > 0:
+        distance[~valid_points] = distance[valid_points].max()
+    filter_3D = distance / focal_length * (0.5 ** 0.5)
+
+    return filter_3D[:, None]
+
+
+def get_scaling_opacity_with_3D_filter(scales, opacity, filter_3D):
+    scales_square = torch.square(scales)
+    det1 = scales_square.prod(dim=1)
+
+    scales_after_square = scales_square + torch.square(filter_3D) 
+    det2 = scales_after_square.prod(dim=1) 
+    coef = torch.sqrt(det1 / det2)
+    aa_opacity = opacity * coef
+
+    aa_scales = torch.sqrt(scales_after_square)
+
+    return aa_scales, aa_opacity
