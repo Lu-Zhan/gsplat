@@ -165,7 +165,7 @@ def render_reflection(
         metallic, # (1, h, w, 1)
         render_with_bg,
         splats_bg=None,
-        distance_to_surface=0,
+        distance_to_surface=0.1,
     ):
     # luzhan: render and write env map at current camera
     point_xyz = obtain_surface_position(

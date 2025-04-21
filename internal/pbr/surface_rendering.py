@@ -36,8 +36,9 @@ def get_canonical_rays(Ks, hw):
         (0, 1),
         value=1.0,
     )  # [H * W, 3]
-    
+  
     camera_dirs = F.normalize(camera_dirs, dim=-1)
+    camera_dirs[..., :2] *= -1 # flip x y to be left and up, respectively
 
     return camera_dirs.reshape((h, w, 3))
     # return camera_dirs

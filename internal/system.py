@@ -449,6 +449,7 @@ class Runner:
                     albedo=intrinsics[..., :3],
                     roughness=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
                     metallic=intrinsics[..., 4:5],
+                    distance_to_surface=cfg.distance_to_surface * self.scene_scale,
                 )
 
                 irradiance = pbr_result["diffuse_light"][None, ...]
@@ -809,6 +810,7 @@ class Runner:
                 metallic=metallic,
                 render_with_bg=cfg.render_with_bg,
                 splats_bg=self.splats_bg if cfg.render_with_bg else None,
+                distance_to_surface=cfg.distance_to_surface * self.scene_scale,
             )
             
             diffuse_image = pbr_result["diffuse_rgb"]

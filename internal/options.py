@@ -142,10 +142,11 @@ class Config:
     intrinsics_loss: bool = False
     intrinsics_lambda: float = 5e-1
     direct_normal_loss: bool = False
-    direct_normal_lambda: float = 1e-1
+    direct_normal_lambda: float = 1e-2
     direct_normal_start_iter: int = 3_000
 
     # luzhan: add surface rendering as a regularizer
+    distance_to_surface: float = 0.2    # 10% of scene scale
     surface_rendering_loss: bool = False
     surface_rendering_lambda: float = 5e-1
     irradiance_loss: bool = False
