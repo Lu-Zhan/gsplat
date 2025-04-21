@@ -182,11 +182,12 @@ class Dataset:
         self.patch_size = patch_size
         self.load_depths = load_depths
         indices = np.arange(len(self.parser.image_names))
-        if split == "train":
-            self.indices = indices[indices % self.parser.test_every != 0]
-        else:
-            self.indices = indices[indices % self.parser.test_every == 0]
-        
+        # if split == "train":
+        #     # self.indices = indices[indices % self.parser.test_every != 0]
+        # else:
+        #     self.indices = indices[indices % self.parser.test_every == 0]
+        self.indices = indices
+
         # luzhan: add intrinsics
         self.load_intrinsics = load_intrinsics
         print(f"Load intrinsics: {self.load_intrinsics}")
@@ -248,7 +249,7 @@ class Dataset:
             irradiance = read_exr(irrdiance_path)
 
             irradiance = torch.from_numpy(irradiance).float()
-            normals = torch.from_numpy(normals).float()
+            normals = torch.from_numpy(normals).float() * 2.0 - 1.0 # [0, 1] -> [-1, 1]
             intrinsics = torch.cat(
                 [torch.from_numpy(albedo), torch.from_numpy(roughness), torch.from_numpy(metallic)], dim=-1
             ).float()
@@ -274,12 +275,34 @@ class Dataset:
             data['intrinsics'] = intrinsics   
 
         if self.load_depths:
-            # image = imageio.imread(self.parser.image_paths[index])[..., :3]
+            # # projected points to image plane to get depths
+            # worldtocams = np.linalg.inv(camtoworlds)
+            # image_name = self.parser.image_names[index]
+            # point_indices = self.parser.point_indices[image_name]
+            # points_world = self.parser.points[point_indices]
+            # points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
+            # points_proj = (K @ points_cam.T).T
+            # points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
+            # depths = points_cam[:, 2]  # (M,)
+            # # filter out points outside the image
+            # selector = (
+            #     (points[:, 0] >= 0)
+            #     & (points[:, 0] < image.shape[1])
+            #     & (points[:, 1] >= 0)
+            #     & (points[:, 1] < image.shape[0])
+            #     & (depths > 0)
+            # )
+            # points = points[selector]
+            # depths = depths[selector]
+            # data["points"] = torch.from_numpy(points).float()
+            # data["depths"] = torch.from_numpy(depths).float()
+
+            # load depth map
             depths_path = self.parser.image_paths[index].replace(image_dir_name, 'depths').replace('.png', '.npy')
-            depths = np.load(depths_path)
+            depths = np.load(depths_path)[..., None]
             depths = torch.from_numpy(depths).float()
 
-            data['depths'] = depths
+            data['depth_map'] = depths
 
         return data
 

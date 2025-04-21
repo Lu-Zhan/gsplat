@@ -119,6 +119,11 @@ class Config:
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
+    # luzhan: direct depth loss
+    direct_depth_loss: bool = False
+    direct_depth_lambda: float = 1e-2
+    depth_start_iter: int = 3_000
+
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
     # Weight for normal loss

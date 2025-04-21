@@ -54,13 +54,12 @@ class Runner:
         os.makedirs(self.render_dir, exist_ok=True)
 
         # Tensorboard
-        self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
+        # self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
         # wandb
         wandb.init(
             project="scene_gen",
             name=os.path.basename(cfg.result_dir),
-            sync_tensorboard=True,
             config=cfg,
         )
 
@@ -70,7 +69,6 @@ class Runner:
             factor=cfg.data_factor,
             normalize=True,
             test_every=cfg.test_every,
-            # align_first_camera=True,
         )
         self.trainset = Dataset(
             self.parser,
@@ -259,9 +257,10 @@ class Runner:
             image_ids = data["image_id"].to(device)
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
-                depths_gt = data["depths"].to(device)  # [1, M]
+                gt_depths = data["depths"].to(device)  # [1, M]
 
-                # gt_depths = data["depths"].to(device)   # [1, H, W, 1]
+            if cfg.direct_depth_loss:
+                gt_depth_map = data["depth_map"].to(device)   # [1, H, W, 1]
             
             # luzhan: load gt intrinsics and normals
             if cfg.intrinsics_loss:
@@ -319,7 +318,7 @@ class Runner:
                 colors, intrinsics, depths = renders[..., 0:3], None, renders[..., 3:4]
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
-                depths_org = depths.clone()
+                # depths_org = depths.clone()
             else:
                 colors, intrinsics, depths = renders, None, None
 
@@ -345,6 +344,7 @@ class Runner:
                 pixels.permute(0, 3, 1, 2), colors.permute(0, 3, 1, 2)
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -355,29 +355,33 @@ class Runner:
                     dim=-1,
                 )  # normalize to [-1, 1]
                 grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                depths = F.grid_sample(
+                depths_tensor = F.grid_sample(
                     depths.permute(0, 3, 1, 2), grid, align_corners=True
                 )  # [1, 1, M, 1]
-                depths = depths.squeeze(3).squeeze(1)  # [1, M]
+                depths_tensor = depths_tensor.squeeze(3).squeeze(1)  # [1, M]
                 # calculate loss in disparity space
-                disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                disp_gt = 1.0 / depths_gt  # [1, M]
+                disp = torch.where(depths_tensor > 0.0, 1.0 / depths_tensor, torch.zeros_like(depths_tensor))
+                disp_gt = 1.0 / gt_depths  # [1, M]
                 depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
 
-                # # luzhan: new depth loss
-                # gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+            # luzhan: new depth loss
+            if cfg.direct_depth_loss:
+                if step > cfg.depth_start_iter:
+                    curr_direct_depth_lambda = cfg.direct_depth_lambda
+                else:
+                    curr_direct_depth_lambda = 0.0
 
-                # mask_depths = depths > 0.0
-                # depths = torch.where(mask_depths, 1 / depths, torch.zeros_like(depths))
-                # depths = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
+                gt_depth_map = (gt_depth_map - gt_depth_map.min()) / (gt_depth_map.max() - gt_depth_map.min() + 1e-8)
+                depth_map = torch.clamp(depths, min=0)
+                depth_map = (depths - depths.min()) / (depths.max() - depths.min() + 1e-8)
 
-                # gt_median = torch.median(gt_depths[gt_depths > 0.0])
-                # median = torch.median(depths[depths > 0.0])
-                # depths = depths * gt_median / (median + 1e-8)
+                gt_depth_median = torch.median(gt_depth_map[gt_depth_map > 0.0])
+                depth_median = torch.median(depth_map[depth_map > 0.0])
+                depth_map = depth_map * gt_depth_median / (depth_median + 1e-8)
 
-                # depthloss = F.l1_loss(depths, gt_depths) * self.scene_scale
-                # loss += depthloss * cfg.depth_lambda
+                directdepthloss = F.l1_loss(depth_map, gt_depth_map) * self.scene_scale
+                loss += directdepthloss * curr_direct_depth_lambda
 
             if cfg.normal_loss:
                 if step > cfg.normal_start_iter:
@@ -440,7 +444,7 @@ class Runner:
                     Ks=Ks,
                     hw=(height, width),
                     camtoworlds=camtoworlds,
-                    depths_tensor=depths_org,
+                    depths_tensor=depths,
                     normals_tensor=normals_tensor,
                     albedo=intrinsics[..., :3],
                     roughness=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
@@ -474,6 +478,8 @@ class Runner:
                 desc += f"dep loss={depthloss.data:.4f}| "
             if cfg.dist_loss:
                 desc += f"dist loss={distloss.data:.4f}"
+            if cfg.direct_depth_loss and step > cfg.depth_start_iter:
+                desc += f"ddep loss={directdepthloss.data:.4f}"
             if cfg.pose_opt and cfg.pose_noise:
                 # monitor the pose error if we inject noise
                 pose_err = F.l1_loss(camtoworlds_gt, camtoworlds)
@@ -487,41 +493,59 @@ class Runner:
 
             if cfg.tb_every > 0 and step % cfg.tb_every == 0:
                 mem = torch.cuda.max_memory_allocated() / 1024**3
-                self.writer.add_scalar("train/loss", loss.data, step)
-                self.writer.add_scalar("train/l1loss", l1loss.data, step)
-                self.writer.add_scalar("train/ssimloss", ssimloss.data, step)
-                self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
-                self.writer.add_scalar("train/mem", mem, step)
+                # self.writer.add_scalar("train/loss", loss.data, step)
+                # self.writer.add_scalar("train/l1loss", l1loss.data, step)
+                # self.writer.add_scalar("train/ssimloss", ssimloss.data, step)
+                # self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
+                # self.writer.add_scalar("train/mem", mem, step)
+                wandb.log(
+                    {
+                        "train/loss": loss.data,
+                        "train/l1loss": l1loss.data,
+                        "train/ssimloss": ssimloss.data,
+                        "train/num_GS": len(self.splats["means"]),
+                        "train/mem": mem,
+                    }, step
+                )
                 if cfg.depth_loss:
-                    self.writer.add_scalar("train/depthloss", depthloss.data, step)
+                    # self.writer.add_scalar("train/depthloss", depthloss.data, step)
+                    wandb.log({"train/depthloss": depthloss.data}, step)
                 if cfg.normal_loss:
-                    self.writer.add_scalar("train/normalloss", normalloss.data, step)
+                    # self.writer.add_scalar("train/normalloss", normalloss.data, step)
+                    wandb.log({"train/normalloss": normalloss.data}, step)
                 if cfg.dist_loss:
-                    self.writer.add_scalar("train/distloss", distloss.data, step)
+                    # self.writer.add_scalar("train/distloss", distloss.data, step)
+                    wandb.log({"train/distloss": distloss.data}, step)
+                if cfg.direct_depth_loss:
+                    # self.writer.add_scalar("train/directdepthloss", directdepthloss.data, step)
+                    wandb.log({"train/directdepthloss": directdepthloss.data}, step)
                 
                 # luzhan: add more losses, including intrinsics loss, direct normal loss
                 if cfg.intrinsics_loss:
-                    self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.data, step)
+                    # self.writer.add_scalar("train/intrinsics_loss", intrinsics_loss.data, step)
+                    wandb.log({"train/intrinsics_loss": intrinsics_loss.data}, step)
                 if cfg.direct_normal_loss:
-                    self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.data, step)
+                    # self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.data, step)
+                    wandb.log({"train/direct_normal_loss": direct_normal_loss.data}, step)
                 
                 if step > cfg.surface_rendering_start_iter:
                     if cfg.irradiance_loss:
-                        self.writer.add_scalar("train/irradiance_loss", irradiance_loss.data, step)
+                        # self.writer.add_scalar("train/irradiance_loss", irradiance_loss.data, step)
+                        wandb.log({"train/irradiance_loss": irradiance_loss.data}, step)
                     if cfg.surface_rendering_loss:
-                        self.writer.add_scalar("train/surface_rendering_loss", surface_rendering_loss.data, step)    
+                        # self.writer.add_scalar("train/surface_rendering_loss", surface_rendering_loss.data, step)    
+                        wandb.log({"train/surface_rendering_loss": surface_rendering_loss.data}, step)
 
-                if cfg.tb_save_image:
-                    canvas = (
-                        torch.cat([pixels, colors[..., :3]], dim=2)
-                        .detach()
-                        .cpu()
-                        .numpy()
-                    )
-                    canvas = canvas.reshape(-1, *canvas.shape[2:])
-                    self.writer.add_image("train/render", canvas, step)
-                self.writer.flush()
-
+                # if cfg.tb_save_image:
+                #     canvas = (
+                #         torch.cat([pixels, colors[..., :3]], dim=2)
+                #         .detach()
+                #         .cpu()
+                #         .numpy()
+                #     )
+                #     canvas = canvas.reshape(-1, *canvas.shape[2:])
+                #     self.writer.add_image("train/render", canvas, step)
+                # self.writer.flush()
             
             # luzhan: use only the front splats for densification
             if self.cfg.render_with_bg:
@@ -863,10 +887,11 @@ class Runner:
         }
         with open(f"{self.stats_dir}/val_step{step:04d}.json", "w") as f:
             json.dump(stats, f)
-        # save stats to tensorboard
-        for k, v in stats.items():
-            self.writer.add_scalar(f"val/{k}", v, step)
-        self.writer.flush()
+        # # save stats to tensorboard
+        # for k, v in stats.items():
+            # self.writer.add_scalar(f"val/{k}", v, step)
+        # self.writer.flush()
+        wandb.log({f"val/{k}": v for k, v in stats.items()}, step)
 
     @torch.no_grad()
     def render_traj(self, step: int):
