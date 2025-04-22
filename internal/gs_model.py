@@ -2,12 +2,12 @@ import torch
 import math
 from typing import Dict, Optional, Tuple
 
-from datasets.colmap_with_intrinsics import Parser
+# from datasets.colmap_with_intrinsics import Parser
 from utils.utils import rgb_to_sh, knn
 
 
 def create_splats_with_optimizers(
-    parser: Parser,
+    parser,
     init_type: str = "sfm",
     init_num_pts: int = 100_000,
     init_extent: float = 3.0,

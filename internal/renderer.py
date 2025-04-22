@@ -141,6 +141,9 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
             render_with_bg=render_with_bg, # whether to render with bg splats
             filter_3D=filter_3D,
         )[0][..., :3]   # [6, H, W, 3]
+
+        # unit test
+        # color = unit_test_color(i, color)
         
         colors.append(color)
     
@@ -187,9 +190,11 @@ def render_reflection(
     if surface_renderer.camera_dirs is None:
         surface_renderer.update_params(Ks, hw=hw)
 
-    # normals_tensor = torch.nn.functional.normalize(data["normals"], dim=-1).to(normals_tensor)
     normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
     normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
+    # normals_tensor = torch.zeros_like(normals_tensor)
+    # normals_tensor[..., -1] = -1.
+
     normals_tensor[..., 0] *= -1 # flip x axis: opengl -> cubemap 
 
     pbr_result = surface_renderer.render(
@@ -274,3 +279,24 @@ def get_scaling_opacity_with_3D_filter(scales, opacity, filter_3D):
     aa_scales = torch.sqrt(scales_after_square)
 
     return aa_scales, aa_opacity
+
+
+def unit_test_color(i, color):
+    color = torch.zeros_like(color)
+    # if i == 0:
+    #     color[..., 0] = 1
+    # if i == 2:
+    #     color[..., 1] = 1
+    if i == 4:
+        color[..., 2] = 1
+    # if i == 1:
+    #     color[..., 0] = 1
+    #     color[..., 1] = 1
+    # if i == 3:
+    #     color[..., 1] = 1
+    #     color[..., 2] = 1
+    # if i == 5:
+    #     color[..., 0] = 1
+    #     color[..., 2] = 1
+    
+    return color
