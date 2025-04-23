@@ -57,7 +57,7 @@ class Config:
     # luzhan: add Initialization for env map
     init_num_pts_bg: int = 1_000
     radius_of_sphere_bg: float = 10.0
-    render_with_bg: int = 0
+    render_with_bg: bool = False
 
     # Near plane clipping distance
     near_plane: float = 0.2

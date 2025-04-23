@@ -8,8 +8,6 @@ from system import Runner
 
 def main(cfg: Config):
     runner = Runner(cfg)
-    # luzhan: convert render_with_bg to a boolean
-    cfg.render_with_bg = cfg.render_with_bg == 1
     print(f"render_with_bg: {cfg.render_with_bg}")
 
     if cfg.ckpt is not None:

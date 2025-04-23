@@ -138,6 +138,9 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     elif model == 'normal':
         start_idx, end_idx = 0, 3
         mode_idx = 2
+    elif model == 'depth':
+        start_idx, end_idx = -2, -1
+        mode_idx = 0
 
     colors = []
     for i, c2w_cubemap in enumerate(c2w_cubemaps):
@@ -161,7 +164,8 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
 
         # unit test
         # color = unit_test_color(i, color)
-        
+        if model == 'depth':
+            color = color.repeat((1, 1, 1, 3))
         colors.append(color)
     
     colors = torch.cat(colors, dim=0)

@@ -26,7 +26,7 @@ from utils.utils import CameraOptModule, colormap, set_random_seed
 from gsplat.strategy import DefaultStrategy
 
 from pbr.light import CubemapLight
-from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
+from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr, tonemap
 
 from gs_model import create_splats_with_optimizers, create_backgrpound_splats_with_optimizers
 from renderer import rasterize_splats, render_reflection, render_envmap
@@ -162,24 +162,6 @@ class Runner:
             self.pose_perturb.random_init(cfg.pose_noise)
 
         self.app_optimizers = []
-        # if cfg.app_opt:
-        #     self.app_module = AppearanceOptModule(
-        #         len(self.trainset), feature_dim, cfg.app_embed_dim, cfg.sh_degree
-        #     ).to(self.device)
-        #     # initialize the last layer to be zero so that the initial output is zero.
-        #     torch.nn.init.zeros_(self.app_module.color_head[-1].weight)
-        #     torch.nn.init.zeros_(self.app_module.color_head[-1].bias)
-        #     self.app_optimizers = [
-        #         torch.optim.Adam(
-        #             self.app_module.embeds.parameters(),
-        #             lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size) * 10.0,
-        #             weight_decay=cfg.app_opt_reg,
-        #         ),
-        #         torch.optim.Adam(
-        #             self.app_module.color_head.parameters(),
-        #             lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size),
-        #         ),
-        #     ]
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
@@ -555,7 +537,7 @@ class Runner:
                 # self.writer.flush()
             
             # luzhan: use only the front splats for densification
-            if self.cfg.render_with_bg:
+            if render_with_bg:
                 num_gs_front = self.splats["means"].shape[0]
                 grad_info = info["gradient_2dgs"].grad.clone()[:, :num_gs_front]
 
@@ -600,6 +582,7 @@ class Runner:
             # for optimizer in self.optimizers_bg.values():
             #     optimizer.step()
             #     optimizer.zero_grad(set_to_none=True)
+
             # luzhan: optimize hdr scaler
             self.hdr_scaler_optimizer.step()
             self.hdr_scaler_optimizer.zero_grad(set_to_none=True)
@@ -902,12 +885,31 @@ class Runner:
                     render_with_bg=cfg.render_with_bg,
                     model='normal',
                 )
+                self.light_model.update_cubemap(env_colors * 0.5 + 0.5)
+
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = tonemap(envmap)
+                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                save_path = f"{curr_render_dir}/overall/normal.png"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
+
+                env_colors = render_envmap(
+                    splats=self.splats,
+                    splats_bg=self.splats_bg,
+                    point_xyz=torch.tensor([0., 0., 0.]).to(c2w), 
+                    c2w=c2w,
+                    light_model=self.light_model,
+                    render_with_bg=cfg.render_with_bg,
+                    model='depth',
+                )
                 self.light_model.update_cubemap(env_colors)
 
                 envmap = self.light_model.export_envmap(return_img=True)
-                envmap = hdr_to_ldr(envmap)
+                envmap = tonemap(envmap)
+                envmap = (envmap - envmap.min()) / (envmap.max() - envmap.min())
                 envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
-                save_path = f"{curr_render_dir}/overall/normal.png"
+                save_path = f"{curr_render_dir}/overall/depth.png"
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 imageio.imwrite(save_path, envmap)
 
@@ -1135,4 +1137,3 @@ class Runner:
                 save_path = os.path.join(self.render_dir, "init_envmap", f"gt_{step:04d}.png")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 imageio.imwrite(save_path, envmap)
-                
