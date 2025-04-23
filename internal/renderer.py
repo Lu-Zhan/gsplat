@@ -23,6 +23,7 @@ def rasterize_splats(
         absgrad=False,
         sparse_grad=False,
         filter_3D=None,
+        only_bg=False,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
     means = splats["means"]  # [N, 3]
@@ -33,23 +34,28 @@ def rasterize_splats(
     opacities = torch.sigmoid(splats["opacities"])  # [N,]
 
     image_ids = kwargs.pop("image_ids", None)
-    colors = torch.cat([splats["sh0"], splats["shN"]], 1)  # [N, K, 3]
-    
-    # luzhan: concat intrinsics into colors
-    ## step1: transfer sh to rgb 
-    dirs = means[None, :, :] - camtoworlds[:, None, :3, 3]
-    # sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree)
-    colors = spherical_harmonics(sh_degree, dirs[0], colors)   # [N, 3]
-    # make it apple-to-apple with Inria's CUDA Backend.
-    colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
-    intrinsics = torch.sigmoid(splats["intrinsics"]) # [N, 5]
-    colors = torch.cat([colors, intrinsics], dim=-1) # [N, 3+5]
+
+    if only_bg:
+        colors = torch.sigmoid(splats["colors"])  # [K, 3]
+    else:
+        colors = torch.cat([splats["sh0"], splats["shN"]], 1)  # [N, K, 3]
+        
+        # luzhan: concat intrinsics into colors
+        ## step1: transfer sh to rgb 
+        dirs = means[None, :, :] - camtoworlds[:, None, :3, 3]
+        # sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree)
+        colors = spherical_harmonics(sh_degree, dirs[0], colors)   # [N, 3]
+        # make it apple-to-apple with Inria's CUDA Backend.
+        colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
+        intrinsics = torch.sigmoid(splats["intrinsics"]) # [N, 5]
+        colors = torch.cat([colors, intrinsics], dim=-1) # [N, 3+5]
+
     backgrounds = torch.zeros_like(colors[:1])
 
     # assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
 
     # luzhan: add bg splats
-    if render_with_bg:
+    if render_with_bg and not only_bg:
         assert splats_bg is not None, "Please provide splats_bg when render_with_bg is True."
 
         means_bg = splats_bg["means"]  # [K, 3]
@@ -105,7 +111,7 @@ def rasterize_splats(
 
 
 # luzhan: render env at given point
-def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg=None):
+def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg=None, model='color', only_bg=False):
     Ks, c2w_cubemaps = light_model.get_Ks_c2w(point_xyz)
 
     # rotate c2w to align with camera forward direction
@@ -122,6 +128,16 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     if render_with_bg:
         means = torch.cat([means, splats_bg["means"]], dim=0)
     filter_3D = compute_3D_filter(means, Ks, c2w_cubemaps)
+
+    if model == 'color':
+        start_idx, end_idx = 0, 3
+        mode_idx = 0
+    elif model == 'albedo':
+        start_idx, end_idx = 3, 6
+        mode_idx = 0
+    elif model == 'normal':
+        start_idx, end_idx = 0, 3
+        mode_idx = 2
 
     colors = []
     for i, c2w_cubemap in enumerate(c2w_cubemaps):
@@ -140,7 +156,8 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
             distloss=False,
             render_with_bg=render_with_bg, # whether to render with bg splats
             filter_3D=filter_3D,
-        )[0][..., :3]   # [6, H, W, 3]
+            only_bg=only_bg,
+        )[mode_idx][..., start_idx:end_idx]   # [6, H, W, 3]
 
         # unit test
         # color = unit_test_color(i, color)
@@ -150,7 +167,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     colors = torch.cat(colors, dim=0)
     colors = torch.clamp(colors, 0.0, 1.0)
 
-    return colors
+    return colors   # [6, H, W, 3]
     
 
 def render_reflection(

@@ -1,3 +1,5 @@
+from bdb import Breakpoint
+import decimal
 import wandb
 import json
 import math
@@ -27,7 +29,7 @@ from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr
 
 from gs_model import create_splats_with_optimizers, create_backgrpound_splats_with_optimizers
-from renderer import rasterize_splats, render_reflection
+from renderer import rasterize_splats, render_reflection, render_envmap
 
 from utils.geo_utils import transform_normals_to_image_coord #, obtain_surface_position
 from utils.losses import get_tv_loss
@@ -69,6 +71,7 @@ class Runner:
             factor=cfg.data_factor,
             normalize=True,
             test_every=cfg.test_every,
+            load_cubemap=cfg.load_cubemap,
         )
         self.trainset = Dataset(
             self.parser,
@@ -109,7 +112,7 @@ class Runner:
         self.splats_bg, self.optimizers_bg = create_backgrpound_splats_with_optimizers(
             init_num_pts=cfg.init_num_pts_bg,
             radius_of_sphere=cfg.radius_of_sphere_bg,
-            init_scale=cfg.init_scale,
+            init_scale=0.2,
             sparse_grad=cfg.sparse_grad,
             batch_size=cfg.batch_size,
             device=self.device,
@@ -125,7 +128,7 @@ class Runner:
             verbose=True,
             prune_opa=cfg.prune_opa,
             grow_grad2d=cfg.grow_grad2d,
-            grow_scale3d=cfg.grow_scale3d,
+            grow_scale3d=cfg.grow_scale3d, 
             prune_scale3d=cfg.prune_scale3d,
             # refine_scale2d_stop_iter=4000, # splatfacto behavior
             refine_start_iter=cfg.refine_start_iter,
@@ -196,6 +199,9 @@ class Runner:
         
         self.light_model = CubemapLight(height=256)
         self.surface_renderer = SurfaceRenderer()
+
+        if cfg.init_lighting:
+            self.init_lighting(cubemap=self.parser.cubemap)
     
     def train(self):
         cfg = self.cfg
@@ -591,9 +597,9 @@ class Runner:
                 optimizer.zero_grad(set_to_none=True)
 
             # luzhan: optimize bg splats
-            for optimizer in self.optimizers_bg.values():
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+            # for optimizer in self.optimizers_bg.values():
+            #     optimizer.step()
+            #     optimizer.zero_grad(set_to_none=True)
             # luzhan: optimize hdr scaler
             self.hdr_scaler_optimizer.step()
             self.hdr_scaler_optimizer.zero_grad(set_to_none=True)
@@ -845,6 +851,66 @@ class Runner:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, envmap)
 
+            if i == 0:
+                # save envmap of intrinsics
+                w2c = torch.linalg.inv(camtoworlds)
+                w2c[:, :3, -1] = 0.
+                c2w = torch.linalg.inv(w2c) 
+
+                env_colors = render_envmap(
+                    splats=self.splats,
+                    splats_bg=self.splats_bg,
+                    point_xyz=torch.tensor([0., 0., 0.]).to(c2w), 
+                    c2w=c2w,
+                    light_model=self.light_model,
+                    render_with_bg=cfg.render_with_bg,
+                    model='albedo',
+                )
+                self.light_model.update_cubemap(env_colors)
+
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = hdr_to_ldr(envmap)
+                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                save_path = f"{curr_render_dir}/overall/albedo.png"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
+
+                env_colors = render_envmap(
+                    splats=self.splats,
+                    splats_bg=self.splats_bg,
+                    point_xyz=torch.tensor([0., 0., 0.]).to(c2w), 
+                    c2w=c2w,
+                    light_model=self.light_model,
+                    render_with_bg=cfg.render_with_bg,
+                    model='color',
+                )
+                self.light_model.update_cubemap(env_colors)
+
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = hdr_to_ldr(envmap)
+                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                save_path = f"{curr_render_dir}/overall/color.png"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
+
+                env_colors = render_envmap(
+                    splats=self.splats,
+                    splats_bg=self.splats_bg,
+                    point_xyz=torch.tensor([0., 0., 0.]).to(c2w), 
+                    c2w=c2w,
+                    light_model=self.light_model,
+                    render_with_bg=cfg.render_with_bg,
+                    model='normal',
+                )
+                self.light_model.update_cubemap(env_colors)
+
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = hdr_to_ldr(envmap)
+                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                save_path = f"{curr_render_dir}/overall/normal.png"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
+
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
             metrics["psnr"].append(self.psnr(colors, pixels))
@@ -902,8 +968,9 @@ class Runner:
         cfg = self.cfg
         device = self.device
 
-        camtoworlds = self.parser.camtoworlds[5:-5]
-        camtoworlds = generate_interpolated_path(camtoworlds, 1)  # [N, 3, 4]
+        # camtoworlds = self.parser.camtoworlds[5:-5]
+        camtoworlds = self.parser.camtoworlds
+        camtoworlds = generate_interpolated_path(camtoworlds, 2)  # [N, 3, 4]
         camtoworlds = np.concatenate(
             [
                 camtoworlds,
@@ -913,6 +980,9 @@ class Runner:
         )  # [N, 4, 4]
 
         camtoworlds = torch.from_numpy(camtoworlds).float().to(device)
+        w2cs = torch.linalg.inv(camtoworlds)    # [N, 4, 4]
+        w2cs[:, :3, -1] *= 0.6
+        camtoworlds = torch.linalg.inv(w2cs)
         K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
         width, height = list(self.parser.imsize_dict.values())[0]
 
@@ -942,9 +1012,9 @@ class Runner:
             roughness =  renders[0, ..., 6:7].repeat(1, 1, 3)
             metallicity = renders[0, ..., 7:8].repeat(1, 1, 3)
 
-            surf_normals = (surf_normals - surf_normals.min()) / (
-                surf_normals.max() - surf_normals.min()
-            )
+            surf_normals = transform_normals_to_image_coord(surf_normals, camtoworlds)
+            surf_normals = torch.nn.functional.normalize(surf_normals, dim=-1)
+            surf_normals = (surf_normals * 0.5 + 0.5).squeeze(0)
 
             # luzhan: write images, including colors, depths, normals, albedo, roughness, metallicity
             canvas = torch.cat(
@@ -987,152 +1057,82 @@ class Runner:
     def update_hdr_scaler(self, init_scaler):
         self.hdr_scaler.data = torch.log(init_scaler).view((1,)).to(self.device)
         print(f"Initial hdr scaler: {init_scaler}")
-    
-    # def rasterize_splats(
-    #     self,
-    #     camtoworlds: Tensor,
-    #     Ks: Tensor,
-    #     width: int,
-    #     height: int,
-    #     render_with_bg: bool = False,
-    #     **kwargs,
-    # ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict]:
-    #     means = self.splats["means"]  # [N, 3]
-    #     # quats = F.normalize(self.splats["quats"], dim=-1)  # [N, 4]
-    #     # rasterization does normalization internally
-    #     quats = self.splats["quats"]  # [N, 4]
-    #     scales = torch.exp(self.splats["scales"])  # [N, 3]
-    #     opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
-    #     image_ids = kwargs.pop("image_ids", None)
-    #     if self.cfg.app_opt:
-    #         colors = self.app_module(
-    #             features=self.splats["features"],
-    #             embed_ids=image_ids,
-    #             dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
-    #             sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
-    #         )
-    #         colors = colors + self.splats["colors"]
-    #         colors = torch.sigmoid(colors)
-    #     else:
-    #         colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+    def init_lighting(self, cubemap):
+        cfg = self.cfg
+        device = self.device
+
+        cubemap = hdr_to_ldr(cubemap.to(device))
+
+        max_steps = 400
+        init_step = 0
+
+        trainloader = torch.utils.data.DataLoader(
+            self.trainset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            persistent_workers=True,
+            pin_memory=True,
+        )
+        trainloader_iter = iter(trainloader)
+        data = next(trainloader_iter)   # get first image, c2w
+        camtoworlds = data["camtoworld"].to(device)  # [1, 4, 4]
+
+        # Training loop.
+        for step in tqdm.tqdm(range(init_step, max_steps), desc="Init Lit"):
+            env_colors = render_envmap(
+                splats=self.splats_bg,
+                splats_bg=None,
+                point_xyz=torch.tensor([0., 0., 0.]).to(camtoworlds), 
+                c2w=camtoworlds,
+                light_model=self.light_model,
+                render_with_bg=False,
+                only_bg=True,
+            )
         
-    #     # luzhan: concat intrinsics into colors
-    #     ## step1: transfer sh to rgb 
-    #     dirs = means[None, :, :] - camtoworlds[:, None, :3, 3]
-    #     sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree)
-    #     colors = spherical_harmonics(sh_degree, dirs[0], colors)   # [N, 3]
-    #     # make it apple-to-apple with Inria's CUDA Backend.
-    #     colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
-    #     intrinsics = torch.sigmoid(self.splats["intrinsics"]) # [N, 5]
-    #     colors = torch.cat([colors, intrinsics], dim=-1) # [N, 3+5]
-    #     backgrounds = torch.zeros_like(colors[:1])
+            # loss
+            l1loss = F.l1_loss(env_colors, cubemap)
+            ssimloss = 1.0 - self.ssim(
+                cubemap.permute(0, 3, 1, 2), env_colors.permute(0, 3, 1, 2)
+            )
+            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
 
-    #     assert self.cfg.antialiased is False, "Antialiased is not supported for 2DGS"
+            loss.backward()
 
-    #     # luzhan: add bg splats
-    #     if render_with_bg:
-    #         means_bg = self.splats_bg["means"]  # [K, 3]
-    #         quats_bg = self.splats_bg["quats"]  # [K, 4]
-    #         scales_bg = torch.exp(self.splats_bg["scales"])  # [K, 3]
-    #         opacities_bg = torch.sigmoid(self.splats_bg["opacities"])  # [K,]
-    #         colors_bg = torch.sigmoid(self.splats_bg["colors"])  # [K, 3]
-    #         colors_bg = torch.cat([colors_bg, torch.zeros([colors_bg.shape[0], 5]).to(colors_bg)], dim=-1)  # [K, 3+5]
+            if step % 10 == 0:
+                wandb.log(
+                    {
+                        "env/loss": loss.data,
+                        "env/l1loss": l1loss.data,
+                        "env/ssimloss": ssimloss.data,
+                    }, step
+                )
 
-    #         means = torch.cat([means, means_bg], dim=0)
-    #         quats = torch.cat([quats, quats_bg], dim=0)
-    #         scales = torch.cat([scales, scales_bg], dim=0)
-    #         opacities = torch.cat([opacities, opacities_bg], dim=0)
-    #         colors = torch.cat([colors, colors_bg], dim=0)
+            # luzhan: optimize bg splats
+            for optimizer in self.optimizers_bg.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
-    #     if self.model_type == "2dgs":
-    #         (
-    #             render_colors,
-    #             render_alphas,
-    #             render_normals,
-    #             normals_from_depth,
-    #             render_distort,
-    #             render_median,
-    #             info,
-    #         ) = rasterization_2dgs(
-    #             means=means,
-    #             quats=quats,
-    #             scales=scales,
-    #             opacities=opacities,
-    #             colors=colors,
-    #             viewmats=torch.linalg.inv(camtoworlds),  # [C, 4, 4]
-    #             Ks=Ks,  # [C, 3, 3]
-    #             width=width,
-    #             height=height,
-    #             packed=self.cfg.packed,
-    #             absgrad=self.cfg.absgrad,
-    #             sparse_grad=self.cfg.sparse_grad,
-    #             backgrounds=backgrounds,
-    #             **kwargs,
-    #         )
-    #     elif self.model_type == "2dgs-inria":
-    #         renders, info = rasterization_2dgs_inria_wrapper(
-    #             means=means,
-    #             quats=quats,
-    #             scales=scales,
-    #             opacities=opacities,
-    #             colors=colors,
-    #             viewmats=torch.linalg.inv(camtoworlds),  # [C, 4, 4]
-    #             Ks=Ks,  # [C, 3, 3]
-    #             width=width,
-    #             height=height,
-    #             packed=self.cfg.packed,
-    #             absgrad=self.cfg.absgrad,
-    #             sparse_grad=self.cfg.sparse_grad,
-    #             **kwargs,
-    #         )
-    #         render_colors, render_alphas = renders
-    #         render_normals = info["normals_rend"]
-    #         normals_from_depth = info["normals_surf"]
-    #         render_distort = info["render_distloss"]
-    #         render_median = render_colors[..., 3]
+            if step % 100 == 0:
+                self.light_model.update_cubemap(env_colors)
 
-    #     return (
-    #         render_colors,
-    #         render_alphas,
-    #         render_normals,
-    #         normals_from_depth,
-    #         render_distort,
-    #         render_median,
-    #         info,
-    #     )
-    
-    # # luzhan: render env at given point
-    # def render_envmap(self, point_xyz, c2w):
-    #     Ks, c2w_cubemaps = self.light_model.get_Ks_c2w(point_xyz)
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = hdr_to_ldr(envmap)
 
-    #     # rotate c2w to align with camera forward direction
-    #     ref_w2c = torch.linalg.inv(c2w[0])
+                envmap = (envmap.data.cpu().numpy() * 255).astype(np.uint8)
+                wandb.log({"env/envmap": wandb.Image(envmap)}, step)
+                save_path = os.path.join(self.render_dir, "init_envmap", f"env_{step:04d}.png")
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
 
-    #     for i, c2w_cubemap in enumerate(c2w_cubemaps):
-    #         w2c = torch.linalg.inv(c2w_cubemap.clone())
-    #         w2c = w2c @ ref_w2c
+                self.light_model.update_cubemap(cubemap)
+                envmap = self.light_model.export_envmap(return_img=True)
+                envmap = hdr_to_ldr(envmap)
 
-    #         c2w_cubemaps[i] = torch.linalg.inv(w2c)
-
-    #     colors = []
-    #     for i, c2w_cubemap in enumerate(c2w_cubemaps):
-    #         color = self.rasterize_splats(
-    #             camtoworlds=c2w_cubemap[None, ...],
-    #             Ks=Ks[:1],
-    #             width=self.light_model.height,
-    #             height=self.light_model.height,
-    #             near_plane=0.02,
-    #             far_plane=self.cfg.far_plane,
-    #             image_ids=None,
-    #             render_mode="RGB",
-    #             distloss=False,
-    #             render_with_bg=self.cfg.render_with_bg, # whether to render with bg splats
-    #         )[0][..., :3]   # [6, H, W, 3]
-            
-    #         colors.append(color)
-        
-    #     colors = torch.cat(colors, dim=0)
-    #     colors = torch.clamp(colors, 0.0, 1.0)
-    #     self.light_model.update_cubemap(colors, hdr_scaler=torch.exp(self.hdr_scaler))
-    
+                envmap = (envmap.data.cpu().numpy() * 255).astype(np.uint8)
+                wandb.log({"env/gt_envmap": wandb.Image(envmap)}, step)
+                save_path = os.path.join(self.render_dir, "init_envmap", f"gt_{step:04d}.png")
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                imageio.imwrite(save_path, envmap)
+                

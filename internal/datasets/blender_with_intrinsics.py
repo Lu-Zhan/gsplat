@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import trimesh
+from einops import rearrange
 
 from .load_image import read_exr
 from .normalize import (
@@ -30,6 +31,7 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        load_cubemap: bool = False,
         **kwargs,
     ):
         self.data_dir = data_dir
@@ -133,6 +135,13 @@ class Parser:
         scene_center = np.mean(camera_locations, axis=0)
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
+
+        # load cubemap
+        if load_cubemap:
+            cubemap_path = os.path.join(data_dir, 'light_info/cubemap.exr')
+            cubemap = read_exr(cubemap_path)   
+            self.cubemap = rearrange(cubemap, 'h (n w) c -> n h w c', n=6)
+            self.cubemap = torch.from_numpy(self.cubemap).float()
 
 
 def get_canonical_rays(Ks, hw):

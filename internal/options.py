@@ -56,7 +56,7 @@ class Config:
 
     # luzhan: add Initialization for env map
     init_num_pts_bg: int = 1_000
-    radius_of_sphere_bg: float = 100.0
+    radius_of_sphere_bg: float = 10.0
     render_with_bg: int = 0
 
     # Near plane clipping distance
@@ -158,6 +158,10 @@ class Config:
     normals_tv_lambda: float = 1
     intrinsics_tv_loss: bool = False
     intrinsics_tv_lambda: float = 1
+
+    # luzhan: add init lighting
+    load_cubemap: bool = False
+    init_lighting: bool = False
 
     # luzhan: if evaluate on train dataset
     eval_trainset: bool = False

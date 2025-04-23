@@ -80,7 +80,7 @@ def create_splats_with_optimizers(
 
 def create_backgrpound_splats_with_optimizers(
     # parser: Parser,
-    init_num_pts: int = 100_000,
+    init_num_pts: int = 1_000,
     radius_of_sphere: float = 100.0,
     init_opacity: float = 1,
     init_scale: float = 1.0,
@@ -100,7 +100,7 @@ def create_backgrpound_splats_with_optimizers(
     points = torch.stack((x, y, z), dim=-1) * radius_of_sphere  # Scale to 10m sphere
 
     # init rgbs
-    rgbs = torch.ones((init_num_pts, 3)) * 0.01
+    rgbs = torch.ones((init_num_pts, 3)) * 0.999
 
     # init geometry
     N = points.shape[0]
@@ -111,17 +111,16 @@ def create_backgrpound_splats_with_optimizers(
 
     quats = torch.cat([torch.ones((N, 1)), torch.zeros((N, 3))], dim=-1) # [N, 4]
     opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
+    colors = torch.logit(rgbs)  # [N, 3]
 
     params = [
         # name, value, lr
-        ("scales", torch.nn.Parameter(scales), 5e-3),
-        ("quats", torch.nn.Parameter(quats), 1e-3),
+        ("colors", torch.nn.Parameter(colors), 4e-2),
+        ("scales", torch.nn.Parameter(scales), 1e-1),
+        ("quats", torch.nn.Parameter(quats), 2e-2),
         ("means", points, 0),
         ("opacities", opacities, 0),
     ]
-
-    colors = torch.logit(rgbs)  # [N, 3]
-    params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
     
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     optimizers = {
@@ -130,6 +129,6 @@ def create_backgrpound_splats_with_optimizers(
             eps=1e-15 / math.sqrt(batch_size),
             betas=(1 - batch_size * (1 - 0.9), 1 - batch_size * (1 - 0.999)),
         )
-        for name, _, lr in params if name in ["scales", "quats"]
+        for name, _, lr in params if name in ["scales", "quats", "colors"]
     }
     return splats, optimizers
