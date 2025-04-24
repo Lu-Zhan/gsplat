@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
+import viser
 
 # from datasets.colmap_with_intrinsics import Dataset, Parser
 from datasets.blender_with_intrinsics import Dataset, Parser
@@ -427,8 +428,10 @@ class Runner:
 
             if (cfg.irradiance_loss or cfg.surface_rendering_loss) and step >= cfg.surface_rendering_start_iter:
                 pbr_result = render_reflection(
+                    splats=self.splats,
                     surface_renderer=self.surface_renderer,
                     light_model=self.light_model,
+                    hdr_scaler=self.hdr_scaler,
                     Ks=Ks,
                     hw=(height, width),
                     camtoworlds=camtoworlds,
@@ -437,6 +440,8 @@ class Runner:
                     albedo=intrinsics[..., :3],
                     roughness=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
                     metallic=intrinsics[..., 4:5],
+                    render_with_bg=render_with_bg,
+                    splats_bg=self.splats_bg if render_with_bg else None,
                     distance_to_surface=cfg.distance_to_surface * self.scene_scale,
                 )
 
@@ -468,7 +473,7 @@ class Runner:
             if cfg.dist_loss:
                 desc += f"dist loss={distloss.data:.4f}"
             if cfg.direct_depth_loss and step > cfg.depth_start_iter:
-                desc += f"ddep loss={directdepthloss.data:.4f}"
+                desc += f"ddep loss={directdepthloss.data:.4f}| "
             if cfg.pose_opt and cfg.pose_noise:
                 # monitor the pose error if we inject noise
                 pose_err = F.l1_loss(camtoworlds_gt, camtoworlds)
@@ -972,18 +977,18 @@ class Runner:
 
         # camtoworlds = self.parser.camtoworlds[5:-5]
         camtoworlds = self.parser.camtoworlds
-        camtoworlds = generate_interpolated_path(camtoworlds, 2)  # [N, 3, 4]
-        camtoworlds = np.concatenate(
-            [
-                camtoworlds,
-                np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
-            ],
-            axis=1,
-        )  # [N, 4, 4]
+        # camtoworlds = generate_interpolated_path(camtoworlds, 1)  # [N, 3, 4]
+        # camtoworlds = np.concatenate(
+        #     [
+        #         camtoworlds,
+        #         np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
+        #     ],
+        #     axis=1,
+        # )  # [N, 4, 4]
 
         camtoworlds = torch.from_numpy(camtoworlds).float().to(device)
         w2cs = torch.linalg.inv(camtoworlds)    # [N, 4, 4]
-        w2cs[:, :3, -1] *= 0.6
+        w2cs[:, :3, -1] *= 0.8
         camtoworlds = torch.linalg.inv(w2cs)
         K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
         width, height = list(self.parser.imsize_dict.values())[0]
@@ -1046,14 +1051,20 @@ class Runner:
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
 
-        render_colors, _, _, _, _, _, _ = self.rasterize_splats(
+        render_colors, _, _, _, _, _, _ = rasterize_splats(
+            splats=self.splats,
             camtoworlds=c2w[None],
             Ks=K[None],
             width=W,
             height=H,
             sh_degree=self.cfg.sh_degree,  # active all SH degrees
+            near_plane=self.cfg.near_plane,
+            far_plane=self.cfg.far_plane,
             radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
+            render_with_bg=self.cfg.render_with_bg,
+            splats_bg=self.splats_bg if self.cfg.render_with_bg else None,
         )  # [1, H, W, 3]
+
         return render_colors[0].cpu().numpy()
     
     def update_hdr_scaler(self, init_scaler):
@@ -1102,19 +1113,19 @@ class Runner:
 
             loss.backward()
 
+            # luzhan: optimize bg splats
+            for optimizer in self.optimizers_bg.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            
             if step % 10 == 0:
                 wandb.log(
                     {
                         "env/loss": loss.data,
                         "env/l1loss": l1loss.data,
                         "env/ssimloss": ssimloss.data,
-                    }, step
+                    }
                 )
-
-            # luzhan: optimize bg splats
-            for optimizer in self.optimizers_bg.values():
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
 
             if step % 100 == 0:
                 self.light_model.update_cubemap(env_colors)
@@ -1123,7 +1134,7 @@ class Runner:
                 envmap = hdr_to_ldr(envmap)
 
                 envmap = (envmap.data.cpu().numpy() * 255).astype(np.uint8)
-                wandb.log({"env/envmap": wandb.Image(envmap)}, step)
+                wandb.log({"env/envmap": wandb.Image(envmap)})
                 save_path = os.path.join(self.render_dir, "init_envmap", f"env_{step:04d}.png")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 imageio.imwrite(save_path, envmap)
@@ -1133,7 +1144,7 @@ class Runner:
                 envmap = hdr_to_ldr(envmap)
 
                 envmap = (envmap.data.cpu().numpy() * 255).astype(np.uint8)
-                wandb.log({"env/gt_envmap": wandb.Image(envmap)}, step)
+                wandb.log({"env/gt_envmap": wandb.Image(envmap)})
                 save_path = os.path.join(self.render_dir, "init_envmap", f"gt_{step:04d}.png")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 imageio.imwrite(save_path, envmap)

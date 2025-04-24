@@ -147,7 +147,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
         color = rasterize_splats(
             splats=splats,
             splats_bg=splats_bg,
-            sh_degree=3,
+            sh_degree=0,
             camtoworlds=c2w_cubemap[None, ...],
             Ks=Ks[:1],
             width=light_model.height,
@@ -166,6 +166,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
         # color = unit_test_color(i, color)
         if model == 'depth':
             color = color.repeat((1, 1, 1, 3))
+
         colors.append(color)
     
     colors = torch.cat(colors, dim=0)
