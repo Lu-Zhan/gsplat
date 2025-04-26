@@ -38,7 +38,7 @@ class Config:
     save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
 
     # luzhan: Initialization strategy using random
-    init_type: str = "sfm"
+    init_type: str = "sfm" # "sfm"
     # Initial number of GSs. Ignored if using sfm
     init_num_pts: int = 100_000
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
@@ -140,10 +140,13 @@ class Config:
 
     # luzhan: intrinsics loss and direct normal loss
     intrinsics_loss: bool = False
-    intrinsics_lambda: float = 5e-1
+    intrinsics_lambda: float = 2e-1
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-2
     direct_normal_start_iter: int = 3_000
+    anisotropy_loss: bool = False
+    anisotropy_th: float = 10
+    anisotropy_lambda: float = 1e-1
 
     # luzhan: add surface rendering as a regularizer
     distance_to_surface: float = 0.2    # 10% of scene scale
@@ -170,7 +173,7 @@ class Config:
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
 
     # Dump information to tensorboard every this steps
-    tb_every: int = 100
+    tb_every: int = 10
     # Save training images to tensorboard
     tb_save_image: bool = False
 

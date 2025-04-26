@@ -18,6 +18,7 @@ import viser
 
 # from datasets.colmap_with_intrinsics import Dataset, Parser
 from datasets.blender_with_intrinsics import Dataset, Parser
+# from datasets.blender_with_intrinsics_2 import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
@@ -33,7 +34,7 @@ from gs_model import create_splats_with_optimizers, create_backgrpound_splats_wi
 from renderer import rasterize_splats, render_reflection, render_envmap
 
 from utils.geo_utils import transform_normals_to_image_coord #, obtain_surface_position
-from utils.losses import get_tv_loss
+from utils.losses import get_tv_loss, anisotropy_loss
 
 
 class Runner:
@@ -395,6 +396,10 @@ class Runner:
                 distloss = render_distort.mean()
                 loss += distloss * curr_dist_lambda
             
+            if cfg.anisotropy_loss and step % 10 == 0:
+                anisotropyloss = anisotropy_loss(torch.exp(self.splats['scales']), th=cfg.anisotropy_th)
+                loss += anisotropyloss * cfg.anisotropy_lambda
+            
             if cfg.normals_tv_loss:
                 normals_tv_loss = get_tv_loss(
                     gt_image=pixels[0].permute(2, 0, 1),
@@ -463,8 +468,6 @@ class Runner:
                         surface_rendering_loss = surf_l1loss * (1.0 - cfg.ssim_lambda) + surf_ssimloss * cfg.ssim_lambda
                         loss += surface_rendering_loss * cfg.surface_rendering_lambda
 
-            if torch.isnan(loss):
-                pass
             loss.backward()
 
             desc = f"loss={loss.data:.3f}| " f"sh degree={sh_degree_to_use}| "

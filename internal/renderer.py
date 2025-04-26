@@ -141,6 +141,8 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     elif model == 'depth':
         start_idx, end_idx = -2, -1
         mode_idx = 0
+    
+    # breakpoint()
 
     colors = []
     for i, c2w_cubemap in enumerate(c2w_cubemaps):

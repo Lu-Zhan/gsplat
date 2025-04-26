@@ -34,3 +34,9 @@ def get_tv_loss(
             tv_loss += (tv_h * rgb_grad_h).mean() + (tv_w * rgb_grad_w).mean()
 
     return tv_loss
+
+
+def anisotropy_loss(scales, th=10):
+    ratio = scales.max(dim=-1).values / scales.min(dim=-1).values - th
+    loss = torch.where(ratio > 0, ratio, torch.zeros_like(ratio))
+    return loss.mean()
