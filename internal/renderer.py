@@ -326,3 +326,57 @@ def unit_test_color(i, color):
     #     color[..., 2] = 1
     
     return color
+
+
+import numpy as np
+from einops import rearrange
+def obtain_irradiance(envmap, normals):
+    # get irradiance
+    # envmap: (n, 2n, 3)
+    # normals: (h, w, 3)
+    dtype = normals.dtype
+    envmap = envmap.to(torch.float16)
+    normals = normals.to(torch.float16)
+    n, m = envmap.shape[:2]
+
+    # build light dirs
+    theta, phi = torch.meshgrid(
+        (torch.arange(m) + 0.5) / m * 2 * np.pi,
+        (torch.arange(n) + 0.5) / n * np.pi,
+        indexing="xy",
+    )
+    
+    xs = torch.sin(phi) * torch.sin(theta)
+    zs = -torch.sin(phi) * torch.cos(theta)
+    ys = torch.cos(phi)
+    light_dirs = torch.stack([xs, ys, zs], dim=-1)  # [n, m, 3]
+    light_dirs = light_dirs.to(normals).reshape(-1, 3)
+    light_rgbs = envmap.reshape(-1, 3)
+
+    h, w = normals.shape[:2]
+
+    normals = normals.reshape(-1, 3)
+    NoL = []
+    for patch in range(0, light_dirs.shape[0], 4):
+        light_dirs_patch = light_dirs[patch:patch+4]
+        NoL_patch = normals @ rearrange(light_dirs_patch, "n c -> c n") # (hw, c) @ (c, nm) -> (hw, nm)
+        NoL.append(NoL_patch)
+
+    NoL = torch.cat(NoL, dim=1)
+
+    NoL = torch.clamp(NoL, min=0.0)
+    torch.cuda.empty_cache()
+    # (hw, nm, 1) @ (1, nm, 3)
+    # breakpoint()
+    irradiance = NoL[..., None] * light_rgbs[None, ...]    # (hw, nm, 3)
+    irradiance = irradiance.sum(dim=1) # (hw, 3)
+
+    return irradiance.reshape(h, w, 3).to(dtype)
+
+
+if __name__ == "__main__":
+    envmap = torch.rand((5, 10, 3))
+    normals = torch.zeros((4, 4, 3))
+    normals[..., -1] = 1.
+
+    irradiance = obtain_irradiance(envmap, normals)

@@ -32,7 +32,7 @@ from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr, tonemap
 
 from gs_model import create_splats_with_optimizers, create_backgrpound_splats_with_optimizers
-from renderer import rasterize_splats, render_reflection, render_envmap
+from renderer import rasterize_splats, render_reflection, render_envmap, obtain_irradiance
 
 from utils.geo_utils import transform_normals_to_image_coord #, obtain_surface_position
 from utils.losses import get_tv_loss, anisotropy_loss
@@ -746,6 +746,7 @@ class Runner:
             normals_tensor = normals.clone()
             normals = transform_normals_to_image_coord(normals, camtoworlds)
             normals = torch.nn.functional.normalize(normals, dim=-1)
+            # normals_tensor = normals.clone()
             normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
 
             # write normals from depth
@@ -832,10 +833,25 @@ class Runner:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
 
-            irradiace = pbr_result["diffuse_light"]
-            gt_irradiance = data["irradiance"].to(irradiace)
+            # envmap = self.light_model.export_envmap(return_img=True, res=[32, 64])
+            # normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
+            # normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
+            # simple_irr = obtain_irradiance(envmap=envmap, normals=normals_tensor[0])
 
-            canvas = torch.cat([gt_irradiance[0], irradiace], dim=1).cpu().numpy()
+            irradiace = pbr_result["diffuse_light"]
+            gt_irradiance = data["irradiance"][0].to(irradiace)
+
+            min_irradiance = torch.min(irradiace)
+            min_gt_irradiance = torch.min(gt_irradiance)
+            range_gt_irradiance = torch.max(gt_irradiance) - min_gt_irradiance
+            range_irradiance = torch.max(irradiace) - min_irradiance
+            irradiace = (irradiace - min_irradiance) / range_irradiance * range_gt_irradiance + min_gt_irradiance
+
+            # min_irradiance = torch.min(simple_irr)
+            # range_irradiance = torch.max(simple_irr) - min_irradiance
+            # simple_irr = (simple_irr - min_irradiance) / range_irradiance * range_gt_irradiance + min_gt_irradiance
+
+            canvas = torch.cat([gt_irradiance, irradiace], dim=1).cpu().numpy()
             save_path = f"{curr_render_dir}/irradiance/val_{i:04d}_irradiance_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             imageio.imwrite(save_path, (canvas * 255).astype(np.uint8))
@@ -909,10 +925,10 @@ class Runner:
                 self.light_model.update_cubemap(env_colors * 0.5 + 0.5)
 
                 normal_pano = self.light_model.export_envmap(return_img=True)
-                normal_pano = tonemap(normal_pano)
-                normal_pano = transform_normals_to_image_coord(normal_pano, camtoworlds)
+                normal_pano = tonemap(normal_pano) * 2 - 1
                 normal_pano = torch.nn.functional.normalize(normal_pano, dim=-1)
-                normal_pano = (normal_pano * 0.5 + 0.5).squeeze(0).cpu().numpy()
+                normal_pano = transform_normals_to_image_coord(normal_pano, camtoworlds)
+                normal_pano = (normal_pano * 0.5 + 0.5).squeeze(0)
 
                 normal_pano = (normal_pano.cpu().numpy() * 255).astype(np.uint8)
                 save_path = f"{curr_render_dir}/overall/normal.png"
