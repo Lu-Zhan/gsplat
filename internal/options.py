@@ -141,6 +141,7 @@ class Config:
     # luzhan: intrinsics loss and direct normal loss
     intrinsics_loss: bool = False
     intrinsics_lambda: float = 2e-1
+    intrinsics_start_iter: int = 3_000
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-2
     direct_normal_start_iter: int = 3_000
@@ -161,6 +162,9 @@ class Config:
     normals_tv_lambda: float = 1
     intrinsics_tv_loss: bool = False
     intrinsics_tv_lambda: float = 1
+
+    normal_dir_loss: bool = False
+    normal_dir_lambda: float = 1e-2
 
     # luzhan: add init lighting
     load_cubemap: bool = False

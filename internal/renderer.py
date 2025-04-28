@@ -125,7 +125,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
 
     # compute filter3D
     means = splats["means"]  # [N, 3]
-    if render_with_bg:
+    if render_with_bg and model == 'color':
         means = torch.cat([means, splats_bg["means"]], dim=0)
     filter_3D = compute_3D_filter(means, Ks, c2w_cubemaps)
 
@@ -138,9 +138,11 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
     elif model == 'normal':
         start_idx, end_idx = 0, 3
         mode_idx = 2
+        filter_3D = None
     elif model == 'depth':
         start_idx, end_idx = -2, -1
         mode_idx = 0
+        filter_3D = None
     
     # breakpoint()
 
@@ -159,7 +161,7 @@ def render_envmap(splats, point_xyz, c2w, light_model, render_with_bg, splats_bg
             image_ids=None,
             render_mode="RGB",
             distloss=False,
-            render_with_bg=render_with_bg, # whether to render with bg splats
+            render_with_bg=render_with_bg and model == 'color', # whether to render with bg splats
             filter_3D=filter_3D,
             only_bg=only_bg,
         )[mode_idx][..., start_idx:end_idx]   # [6, H, W, 3]

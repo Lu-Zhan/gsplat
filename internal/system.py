@@ -26,6 +26,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from utils.utils import CameraOptModule, colormap, set_random_seed
 from gsplat.strategy import DefaultStrategy
+from gsplat.cuda._wrapper import spherical_harmonics
 
 from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr, tonemap
@@ -35,6 +36,8 @@ from renderer import rasterize_splats, render_reflection, render_envmap
 
 from utils.geo_utils import transform_normals_to_image_coord #, obtain_surface_position
 from utils.losses import get_tv_loss, anisotropy_loss
+
+os.environ['TORCH_CUDA_ARCH_LIST'] = ''
 
 
 class Runner:
@@ -80,7 +83,7 @@ class Runner:
             split="train",
             patch_size=cfg.patch_size,
             load_depths=True,
-            load_intrinsics=cfg.intrinsics_loss,    # luzhan: loading intrinsics
+            load_intrinsics=True,    # luzhan: loading intrinsics
         )
         self.valset = Dataset(
             self.parser, 
@@ -216,7 +219,7 @@ class Runner:
             self.trainset,
             batch_size=cfg.batch_size,
             shuffle=True,
-            num_workers=48,
+            num_workers=32,
             persistent_workers=True,
             pin_memory=True,
         )
@@ -300,7 +303,7 @@ class Runner:
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB+D",
                 distloss=self.cfg.dist_loss,
-                render_with_bg=render_with_bg, # whether to render with bg splats
+                render_with_bg=False, # whether to render with bg splats
             )
 
             # luzhan: unpack intrinsics and depths from renders
@@ -408,6 +411,12 @@ class Runner:
 
                 loss += normals_tv_loss * cfg.normals_tv_lambda
             
+            if cfg.normal_dir_loss:
+                normals_cam = transform_normals_to_image_coord(normals, camtoworlds)
+                normals_cam = -torch.nn.functional.normalize(normals_cam, dim=-1)[..., -1]   # (1, H, W)
+                normal_dir_loss = torch.where(normals_cam > 0.0, normals_cam, torch.zeros_like(normals_cam)).mean()
+                loss += normal_dir_loss * cfg.normal_dir_lambda
+            
             if cfg.intrinsics_tv_loss:
                 intrinsics_tv_loss = get_tv_loss(
                     gt_image=pixels[0].permute(2, 0, 1),
@@ -418,8 +427,12 @@ class Runner:
 
             # luzhan: add more losses, including intrinsics loss, direct normal loss
             if cfg.intrinsics_loss:
+                if step > cfg.intrinsics_start_iter:
+                    curr_intrinsics_lambda = cfg.intrinsics_lambda
+                else:
+                    curr_intrinsics_lambda = 0.0
                 intrinsics_loss = F.l1_loss(intrinsics, gt_intrinsics)
-                loss += intrinsics_loss * cfg.intrinsics_lambda
+                loss += intrinsics_loss * curr_intrinsics_lambda
             
             if cfg.direct_normal_loss:
                 if step > cfg.direct_normal_start_iter:
@@ -710,20 +723,20 @@ class Runner:
             # render_median = (render_median - render_median.min()) / (render_median.max() - render_median.min())
             # render_median = render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
-            # gt_depths = data["depths"]
-            # gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
-            # gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+            gt_depths = data["depth_map"]
+            gt_depths = (gt_depths - gt_depths.min()) / (gt_depths.max() - gt_depths.min())
+            gt_depths = gt_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
             excepted_depths = torch.where(excepted_depths > 0.0, 1 / excepted_depths, torch.zeros_like(excepted_depths))
             excepted_depths = (excepted_depths - excepted_depths.min()) / (excepted_depths.max() - excepted_depths.min())
             excepted_depths = excepted_depths.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
 
             # align the median of depths
-            # gt_median = np.median(gt_depths)
-            # excepted_median = np.median(excepted_depths)
-            # excepted_depths = excepted_depths * gt_median / (excepted_median + 1e-8)
+            gt_median = np.median(gt_depths)
+            excepted_median = np.median(excepted_depths)
+            excepted_depths = excepted_depths * gt_median / (excepted_median + 1e-8)
 
-            canvas = np.concatenate([excepted_depths], axis=1)
+            canvas = np.concatenate([gt_depths, excepted_depths], axis=1)
 
             save_path = f"{curr_render_dir}/depths/val_{i:04d}_depth_{step}.png"
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -859,12 +872,12 @@ class Runner:
                 )
                 self.light_model.update_cubemap(env_colors)
 
-                envmap = self.light_model.export_envmap(return_img=True)
-                envmap = hdr_to_ldr(envmap)
-                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                albedo_map = self.light_model.export_envmap(return_img=True)
+                albedo_map = hdr_to_ldr(albedo_map)
+                albedo_map = (albedo_map.cpu().numpy() * 255).astype(np.uint8)
                 save_path = f"{curr_render_dir}/overall/albedo.png"
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                imageio.imwrite(save_path, envmap)
+                imageio.imwrite(save_path, albedo_map)
 
                 env_colors = render_envmap(
                     splats=self.splats,
@@ -895,12 +908,16 @@ class Runner:
                 )
                 self.light_model.update_cubemap(env_colors * 0.5 + 0.5)
 
-                envmap = self.light_model.export_envmap(return_img=True)
-                envmap = tonemap(envmap)
-                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                normal_pano = self.light_model.export_envmap(return_img=True)
+                normal_pano = tonemap(normal_pano)
+                normal_pano = transform_normals_to_image_coord(normal_pano, camtoworlds)
+                normal_pano = torch.nn.functional.normalize(normal_pano, dim=-1)
+                normal_pano = (normal_pano * 0.5 + 0.5).squeeze(0).cpu().numpy()
+
+                normal_pano = (normal_pano.cpu().numpy() * 255).astype(np.uint8)
                 save_path = f"{curr_render_dir}/overall/normal.png"
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                imageio.imwrite(save_path, envmap)
+                imageio.imwrite(save_path, normal_pano)
 
                 env_colors = render_envmap(
                     splats=self.splats,
@@ -913,13 +930,13 @@ class Runner:
                 )
                 self.light_model.update_cubemap(env_colors)
 
-                envmap = self.light_model.export_envmap(return_img=True)
-                envmap = tonemap(envmap)
-                envmap = (envmap - envmap.min()) / (envmap.max() - envmap.min())
-                envmap = (envmap.cpu().numpy() * 255).astype(np.uint8)
+                depth_pano = self.light_model.export_envmap(return_img=True)
+                depth_pano = tonemap(depth_pano)
+                depth_pano = (depth_pano - depth_pano.min()) / (depth_pano.max() - depth_pano.min())
+                depth_pano = (depth_pano.cpu().numpy() * 255).astype(np.uint8)
                 save_path = f"{curr_render_dir}/overall/depth.png"
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                imageio.imwrite(save_path, envmap)
+                imageio.imwrite(save_path, depth_pano)
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
@@ -971,6 +988,23 @@ class Runner:
         # self.writer.flush()
         wandb.log({f"val/{k}": v for k, v in stats.items()}, step)
 
+        # save splats as point cloud (.ply file)
+        self.save_splats(f"{curr_render_dir}/pointcloud/points_{step:05d}.ply")
+    
+    def save_splats(self, save_path):
+        import trimesh
+        print(f"Saving splats to {save_path}")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        points = self.splats["means"]
+
+        colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+        dirs = points[None, ...]
+        colors = spherical_harmonics(0, dirs[0], colors)   # [N, 3]
+        colors = torch.clamp_min(colors + 0.5, 0.0) # [N, 3]
+
+        pc = trimesh.PointCloud(points.data.cpu().numpy(), colors=colors.data.cpu().numpy())
+        pc.export(save_path, "ply")
+
     @torch.no_grad()
     def render_traj(self, step: int):
         """Entry for trajectory rendering."""
@@ -980,19 +1014,19 @@ class Runner:
 
         # camtoworlds = self.parser.camtoworlds[5:-5]
         camtoworlds = self.parser.camtoworlds
-        # camtoworlds = generate_interpolated_path(camtoworlds, 1)  # [N, 3, 4]
-        # camtoworlds = np.concatenate(
-        #     [
-        #         camtoworlds,
-        #         np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
-        #     ],
-        #     axis=1,
-        # )  # [N, 4, 4]
+        camtoworlds = generate_interpolated_path(camtoworlds, 2)  # [N, 3, 4]
+        camtoworlds = np.concatenate(
+            [
+                camtoworlds,
+                np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
+            ],
+            axis=1,
+        )  # [N, 4, 4]
 
         camtoworlds = torch.from_numpy(camtoworlds).float().to(device)
-        w2cs = torch.linalg.inv(camtoworlds)    # [N, 4, 4]
-        w2cs[:, :3, -1] *= 0.8
-        camtoworlds = torch.linalg.inv(w2cs)
+        # w2cs = torch.linalg.inv(camtoworlds)    # [N, 4, 4]
+        # w2cs[:, :3, -1] *= 0.8
+        # camtoworlds = torch.linalg.inv(w2cs)
         K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
         width, height = list(self.parser.imsize_dict.values())[0]
 
@@ -1037,7 +1071,7 @@ class Runner:
         # save to video
         video_dir = f"{cfg.result_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
-        writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=5)
+        writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=10)
         for canvas in canvas_all:
             writer.append_data(canvas)
         writer.close()
