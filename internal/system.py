@@ -345,6 +345,13 @@ class Runner:
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
 
+            if step % 2000 == 0:
+                wandb.log({
+                    'train/vol': wandb.Image(colors.data.cpu().numpy()), 
+                    'train/albedo': wandb.Image(intrinsics[..., :3].data.cpu().numpy()),
+                    }, step,
+                )
+
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -473,10 +480,10 @@ class Runner:
                 irradiance = pbr_result["diffuse_light"][None, ...]
                 rendered_image = pbr_result["render_rgb"][None, ...]
 
-                if step % 1000 == 0:
+                if step % 2000 == 0:
                     wandb.log({
-                        'train/surf': wandb.Image(rendered_image), 
-                        'train/irr': wandb.Image(irradiance)
+                        'train/surf': wandb.Image(rendered_image.data.cpu().numpy()), 
+                        'train/irr': wandb.Image(irradiance.data.cpu().numpy())
                         }, step,
                     )
 
