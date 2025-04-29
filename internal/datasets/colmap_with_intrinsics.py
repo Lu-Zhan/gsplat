@@ -12,7 +12,7 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 from pycolmap import SceneManager
-
+from einops import rearrange
 from .load_image import read_exr
 
 from .normalize import (
@@ -72,15 +72,15 @@ class Parser:
         normalize: bool = False,
         test_every: int = 8,
         align_first_camera: bool = False,
+        load_cubemap: bool = False,
+        **kwargs,
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
 
-        colmap_dir = os.path.join(data_dir, "sparse/0/")
-        if not os.path.exists(colmap_dir):
-            colmap_dir = os.path.join(data_dir, "sparse")
+        colmap_dir = os.path.join(data_dir, 'colmap/dense/sparse')
         assert os.path.exists(
             colmap_dir
         ), f"COLMAP directory {colmap_dir} does not exist."
@@ -149,7 +149,7 @@ class Parser:
             f"[Parser] {len(imdata)} images, taken by {len(set(camera_ids))} cameras."
         )
         # print('Assume camera type is SIMPLE_PINHOLE')
-
+        
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
         if not (type_ == 0 or type_ == 1):
@@ -362,7 +362,12 @@ class Parser:
         dists = np.linalg.norm(camera_locations - scene_center, axis=1)
         self.scene_scale = np.max(dists)
 
-        # save_to_ply(points, points_rgb)
+        # load cubemap
+        if load_cubemap:
+            cubemap_path = os.path.join(data_dir, 'mv_data/light_info/cubemap.exr')
+            cubemap = read_exr(cubemap_path)   
+            self.cubemap = rearrange(cubemap, 'h (n w) c -> n h w c', n=6)
+            self.cubemap = torch.from_numpy(self.cubemap).float()
 
 
 class Dataset:
@@ -431,15 +436,15 @@ class Dataset:
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
         
+        image_folder_name = "samples-rgb"
         # luzhan: add intrinsics
         if self.load_intrinsics:
             # image = imageio.imread(self.parser.image_paths[index])[..., :3]
-            image_folder_name = "samples-rgb"
-            albedo_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/albedo_maps').replace('.png', '.exr')
-            normal_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/normal_maps').replace('.png', '.exr')
-            roughness_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/roughness_maps').replace('.png', '.exr')
-            metallic_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/metallic_maps').replace('.png', '.exr')
-            irrdiance_path = self.parser.image_paths[index].replace(image_folder_name, 'intrinsics/irradiance_maps').replace('.png', '.exr')
+            albedo_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/intrinsics/albedo_maps').replace('.png', '.exr')
+            normal_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/intrinsics/normal_maps').replace('.png', '.exr')
+            roughness_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/intrinsics/roughness_maps').replace('.png', '.exr')
+            metallic_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/intrinsics/metallic_maps').replace('.png', '.exr')
+            irrdiance_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/intrinsics/irradiance_maps').replace('.png', '.exr')
 
             albedo = read_exr(albedo_path)
             normals = read_exr(normal_path)
@@ -496,12 +501,12 @@ class Dataset:
             data["points"] = torch.from_numpy(points).float()
             data["depths"] = torch.from_numpy(depths).float()
 
-            # # further load depth maps
-            # depthmap_path = self.parser.image_paths[index].replace('images', 'depths').replace('.png', '.exr')
-            # depthmaps = read_exr(depthmap_path, channel=1)
-            # depthmaps = torch.from_numpy(depthmaps).float()[..., None]
+            # load depth map
+            depths_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/depths').replace('.png', '.npy')
+            depths = np.load(depths_path)[..., None]
+            depths = torch.from_numpy(depths).float()
 
-            # data['depths'] = depthmaps
+            data['depth_map'] = depths
 
 
         return data

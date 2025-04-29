@@ -18,11 +18,17 @@ def create_splats_with_optimizers(
     sparse_grad: bool = False,
     batch_size: int = 1,
     feature_dim: Optional[int] = None,
+    random_drop_pts: bool = False,
     device: str = "cuda",
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
     if init_type == "sfm":
         points = torch.from_numpy(parser.points).float()
         rgbs = torch.from_numpy(parser.points_rgb / 255.0).float()
+
+        if random_drop_pts:
+            points = points[::8]
+            rgbs = rgbs[::8]
+            print("random 7/8 drop points...")
     elif init_type == "random":
         points = init_extent * scene_scale * (torch.rand((init_num_pts, 3)) * 2 - 1)
         rgbs = torch.rand((init_num_pts, 3))

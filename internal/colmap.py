@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 import math
-
+import argparse
 
 def rotmat2qvec(R):
     Rxx, Ryx, Rzx, Rxy, Ryy, Rzy, Rxz, Ryz, Rzz = R.flat
@@ -148,14 +148,14 @@ def round_python3(number):
     return rounded
 
 def pipeline(scene, base_path):
-    view_path = 'sparse'
+    view_path = 'colmap'
     os.chdir(os.path.join(base_path, scene))
     os.system('rm -r ' + view_path)
     os.mkdir(view_path)
     os.chdir(view_path)
     os.mkdir('created')
     os.mkdir('triangulated')
-    os.mkdir('images')
+    # os.mkdir('images')
 
     images = {}
 
@@ -229,9 +229,16 @@ def pipeline(scene, base_path):
     os.system('colmap stereo_fusion --workspace_path dense --output_path dense/fused.ply')
 
 
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--scene', type=str, default='llff-room')
+    parser.add_argument('--base_path', type=str, default='/home/luzhan/Projects/scene_gen/consistent_3dscene/results/data/img2trajvid_s-prob_v20')
+    args = parser.parse_args()
 
-for scene in ['lily-dragon']: #, 'blue-car', 'lily-dragon']:
+    scene = args.scene
+    base_path = args.base_path
+
     pipeline(
-        scene, 
-        base_path='/home/luzhan/Projects/scene_gen/consistent_3dscene/results/data/img2trajvid_s-prob_v20', 
+        scene=scene, 
+        base_path=base_path, 
     )

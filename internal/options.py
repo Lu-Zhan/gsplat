@@ -172,6 +172,8 @@ class Config:
 
     # luzhan: if evaluate on train dataset
     eval_trainset: bool = False
+    random_drop_pts: bool = False
+    use_dataset_type: str = "blender"
 
     # Model for splatting.
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"

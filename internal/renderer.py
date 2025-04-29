@@ -187,18 +187,18 @@ def render_reflection(
         Ks,
         hw,
         camtoworlds,
-        depths_tensor,
-        normals_tensor, # (1, h, w, 3)
-        albedo, # (1, h, w, 3)
-        roughness, # (1, h, w, 1)
-        metallic, # (1, h, w, 1)
+        depth_map,
+        normal_map, # (1, h, w, 3)
+        albedo_map, # (1, h, w, 3)
+        roughness_map, # (1, h, w, 1)
+        metallic_map, # (1, h, w, 1)
         render_with_bg,
         splats_bg=None,
         distance_to_surface=0.1,
     ):
     # luzhan: render and write env map at current camera
     point_xyz = obtain_surface_position(
-        depth_map=depths_tensor,
+        depth_map=depth_map,
         distance_to_surface=distance_to_surface,
     )
 
@@ -216,19 +216,16 @@ def render_reflection(
     if surface_renderer.camera_dirs is None:
         surface_renderer.update_params(Ks, hw=hw)
 
-    normals_tensor = transform_normals_to_image_coord(normals_tensor, camtoworlds)
-    normals_tensor = torch.nn.functional.normalize(normals_tensor, dim=-1)
-    # normals_tensor = torch.zeros_like(normals_tensor)
-    # normals_tensor[..., -1] = -1.
-
-    normals_tensor[..., 0] *= -1 # flip x axis: opengl -> cubemap 
+    normal_map = transform_normals_to_image_coord(normal_map, camtoworlds)
+    normal_map = torch.nn.functional.normalize(normal_map, dim=-1)
+    normal_map[..., 0] *= -1 # flip x axis: opengl -> cubemap 
 
     pbr_result = surface_renderer.render(
         c2w=camtoworlds[0],
-        normals=normals_tensor[0],
-        albedo=albedo[0],
-        roughness=roughness[0, ..., :1],
-        metallic=metallic[0, ..., :1],
+        normals=normal_map[0],
+        albedo=albedo_map[0],
+        roughness=roughness_map[0, ..., :1],
+        metallic=metallic_map[0, ..., :1],
         light_model=light_model,
     )
 

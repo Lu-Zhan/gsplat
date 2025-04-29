@@ -17,7 +17,7 @@ import tqdm
 import viser
 
 # from datasets.colmap_with_intrinsics import Dataset, Parser
-from datasets.blender_with_intrinsics import Dataset, Parser
+# from datasets.blender_with_intrinsics import Dataset, Parser
 # from datasets.blender_with_intrinsics_2 import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch.utils.tensorboard import SummaryWriter
@@ -70,6 +70,13 @@ class Runner:
             config=cfg,
         )
 
+        if cfg.use_dataset_type == "colmap":
+            from datasets.colmap_with_intrinsics import Dataset, Parser
+        elif cfg.use_dataset_type == "blender":
+            from datasets.blender_with_intrinsics import Dataset, Parser
+        else:
+            raise NotImplementedError(f"Dataset type {cfg.use_dataset_type} is not supported.")
+
         # Load data: Training data should contain initial points and colors.
         self.parser = Parser(
             data_dir=cfg.data_dir,
@@ -109,6 +116,7 @@ class Runner:
             batch_size=cfg.batch_size,
             feature_dim=feature_dim,
             device=self.device,
+            random_drop_pts=cfg.random_drop_pts,
         )
         print("Model initialized. Number of GS:", len(self.splats["means"]))
         self.model_type = cfg.model_type
@@ -311,7 +319,6 @@ class Runner:
                 colors, intrinsics, depths = renders[..., 0:3], None, renders[..., 3:4]
             elif renders.shape[-1] == 9:
                 colors, intrinsics, depths = renders[..., 0:3], renders[..., 3:-1], renders[..., -1:]
-                # depths_org = depths.clone()
             else:
                 colors, intrinsics, depths = renders, None, None
 
@@ -453,11 +460,11 @@ class Runner:
                     Ks=Ks,
                     hw=(height, width),
                     camtoworlds=camtoworlds,
-                    depths_tensor=depths,
-                    normals_tensor=normals_tensor,
-                    albedo=intrinsics[..., :3],
-                    roughness=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
-                    metallic=intrinsics[..., 4:5],
+                    depth_map=depths,
+                    normal_map=normals,
+                    albedo_map=intrinsics[..., :3],
+                    roughness_map=intrinsics[..., 3:4] * (1.0 - 0.04) + 0.04,   # roughness in [0.04, 1.0], as GSIR
+                    metallic_map=intrinsics[..., 4:5],
                     render_with_bg=render_with_bg,
                     splats_bg=self.splats_bg if render_with_bg else None,
                     distance_to_surface=cfg.distance_to_surface * self.scene_scale,
@@ -465,6 +472,13 @@ class Runner:
 
                 irradiance = pbr_result["diffuse_light"][None, ...]
                 rendered_image = pbr_result["render_rgb"][None, ...]
+
+                if step % 1000 == 0:
+                    wandb.log({
+                        'train/surf': wandb.Image(rendered_image), 
+                        'train/irr': wandb.Image(irradiance)
+                        }, step,
+                    )
 
                 if step == cfg.surface_rendering_start_iter:
                     self.update_hdr_scaler(init_scaler=(pixels.mean() / (rendered_image.mean() + 1e-8)))
@@ -598,12 +612,6 @@ class Runner:
             for optimizer in self.optimizers.values():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-
-            # luzhan: optimize bg splats
-            # for optimizer in self.optimizers_bg.values():
-            #     optimizer.step()
-            #     optimizer.zero_grad(set_to_none=True)
-
             # luzhan: optimize hdr scaler
             self.hdr_scaler_optimizer.step()
             self.hdr_scaler_optimizer.zero_grad(set_to_none=True)
@@ -814,11 +822,11 @@ class Runner:
                 Ks=Ks,
                 hw=(height, width),
                 camtoworlds=camtoworlds,
-                depths_tensor=depths_tensor,
-                normals_tensor=normals_tensor,
-                albedo=albedo,
-                roughness=roughness * (1 - 0.04) + 0.04,
-                metallic=metallic,
+                depth_map=depths_tensor,
+                normal_map=normals_tensor,
+                albedo_map=albedo,
+                roughness_map=roughness * (1 - 0.04) + 0.04,
+                metallic_map=metallic,
                 render_with_bg=cfg.render_with_bg,
                 splats_bg=self.splats_bg if cfg.render_with_bg else None,
                 distance_to_surface=cfg.distance_to_surface * self.scene_scale,
