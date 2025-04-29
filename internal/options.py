@@ -152,7 +152,7 @@ class Config:
     # luzhan: add surface rendering as a regularizer
     distance_to_surface: float = 0.2    # 10% of scene scale
     surface_rendering_loss: bool = False
-    surface_rendering_lambda: float = 5e-1
+    surface_rendering_lambda: float = 1e-1
     irradiance_loss: bool = False
     irradiance_lambda: float = 5e-1
     surface_rendering_start_iter: int = 7000

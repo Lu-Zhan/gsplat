@@ -300,7 +300,7 @@ class Runner:
                 info,
             ) = rasterize_splats(
                 splats=self.splats,
-                splats_bg=self.splats_bg if render_with_bg else None,
+                splats_bg=None,
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,

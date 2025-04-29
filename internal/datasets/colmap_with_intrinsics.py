@@ -502,11 +502,18 @@ class Dataset:
             data["depths"] = torch.from_numpy(depths).float()
 
             # load depth map
-            depths_path = self.parser.image_paths[index].replace(image_folder_name, 'mv_data/depths').replace('.png', '.npy')
-            depths = np.load(depths_path)[..., None]
-            depths = torch.from_numpy(depths).float()
+            depths_path = self.parser.image_paths[index].replace(image_folder_name, 'depths').replace('.png', '.exr')
+            # depths = np.load(depths_path)
+            depths = read_exr(depths_path, channel=1)
 
-            data['depth_map'] = depths
+            # resize to the same shape as the image
+            depths = torch.from_numpy(depths).float()
+            h, w = image.shape[:2]
+            depths = torch.nn.functional.interpolate(
+                depths[None, None, ...], size=(h, w), mode='bilinear', align_corners=False
+            )[0, 0]
+            
+            data['depth_map'] = depths[..., None]
 
 
         return data
