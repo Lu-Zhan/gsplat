@@ -31,7 +31,7 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 6_000
+    max_steps: int = 30_000
     # Steps to evaluate the model
     eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
     # Steps to save the model
@@ -60,12 +60,12 @@ class Config:
     render_with_bg: bool = False
 
     # Near plane clipping distance
-    near_plane: float = 0.02
+    near_plane: float = 0.2
     # Far plane clipping distance
     far_plane: float = 200
 
     # GSs with opacity below this value will be pruned
-    prune_opa: float = 0.02
+    prune_opa: float = 0.05
     # GSs with image plane gradient above this value will be split/duplicated
     grow_grad2d: float = 0.0002
     # GSs with scale below this value will be duplicated. Above will be split
@@ -74,11 +74,11 @@ class Config:
     prune_scale3d: float = 0.1
 
     # Start refining GSs after this iteration
-    refine_start_iter: int = 50000
+    refine_start_iter: int = 500
     # Stop refining GSs after this iteration
-    refine_stop_iter: int = 50000
+    refine_stop_iter: int = 15_000
     # Reset opacities every this steps
-    reset_every: int = 100000
+    reset_every: int = 3000
     # Refine GSs every this steps
     refine_every: int = 100
 
@@ -122,29 +122,29 @@ class Config:
     # luzhan: direct depth loss
     direct_depth_loss: bool = False
     direct_depth_lambda: float = 1e-2
-    depth_start_iter: int = 1500
+    depth_start_iter: int = 3_000
 
     # Enable normal consistency loss. (Currently for 2DGS only)
     normal_loss: bool = False
     # Weight for normal loss
     normal_lambda: float = 5e-2
     # Iteration to start normal consistency regulerization
-    normal_start_iter: int = 2500
+    normal_start_iter: int = 7_000
 
     # Distortion loss. (experimental)
     dist_loss: bool = False
     # Weight for distortion loss
     dist_lambda: float = 1e-2
     # Iteration to start distortion loss regulerization
-    dist_start_iter: int = 3000
+    dist_start_iter: int = 3_000
 
     # luzhan: intrinsics loss and direct normal loss
     intrinsics_loss: bool = False
     intrinsics_lambda: float = 2e-1
-    intrinsics_start_iter: int = 0
+    intrinsics_start_iter: int = 3_000
     direct_normal_loss: bool = False
     direct_normal_lambda: float = 1e-2
-    direct_normal_start_iter: int = 1500
+    direct_normal_start_iter: int = 3_000
     anisotropy_loss: bool = False
     anisotropy_th: float = 10
     anisotropy_lambda: float = 1e-1
@@ -155,7 +155,7 @@ class Config:
     surface_rendering_lambda: float = 1e-1
     irradiance_loss: bool = False
     irradiance_lambda: float = 5e-1
-    surface_rendering_start_iter: int = 3000
+    surface_rendering_start_iter: int = 7000
 
     # luzhan: add smoothness loss for normals and intrinsics
     normals_tv_loss: bool = False

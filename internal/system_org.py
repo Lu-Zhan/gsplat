@@ -31,7 +31,7 @@ from gsplat.cuda._wrapper import spherical_harmonics
 from pbr.light import CubemapLight
 from pbr.surface_rendering import SurfaceRenderer, hdr_to_ldr, tonemap
 
-from gs_model import create_splats_with_optimizers_from_pth, create_backgrpound_splats_with_optimizers
+from gs_model import create_splats_with_optimizers, create_backgrpound_splats_with_optimizers
 from renderer import rasterize_splats, render_reflection, render_envmap, obtain_irradiance
 
 from utils.geo_utils import transform_normals_to_image_coord #, obtain_surface_position
@@ -102,8 +102,9 @@ class Runner:
         print("Scene scale:", self.scene_scale)
 
         # Model
-        self.splats, self.optimizers = create_splats_with_optimizers_from_pth(
-            init_splats=self.parser.init_splats,
+        feature_dim = 32 if cfg.app_opt else None
+        self.splats, self.optimizers = create_splats_with_optimizers(
+            self.parser,
             init_type=cfg.init_type,
             init_num_pts=cfg.init_num_pts,
             init_extent=cfg.init_extent,
@@ -113,10 +114,10 @@ class Runner:
             sh_degree=cfg.sh_degree,
             sparse_grad=cfg.sparse_grad,
             batch_size=cfg.batch_size,
+            feature_dim=feature_dim,
             device=self.device,
+            random_drop_pts=cfg.random_drop_pts,
         )
-        torch.cuda.empty_cache()
-        
         print("Model initialized. Number of GS:", len(self.splats["means"]))
         self.model_type = cfg.model_type
 
@@ -351,7 +352,7 @@ class Runner:
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
 
-            if step % 1000 == 0:
+            if step % 2000 == 0:
                 vol_image = np.clip(colors.data.cpu().numpy(), 0.0, 1.0)
                 
                 wandb.log({
@@ -421,7 +422,7 @@ class Runner:
                 distloss = render_distort.mean()
                 loss += distloss * curr_dist_lambda
             
-            if cfg.anisotropy_loss:
+            if cfg.anisotropy_loss and step % 10 == 0:
                 anisotropyloss = anisotropy_loss(torch.exp(self.splats['scales']), th=cfg.anisotropy_th)
                 loss += anisotropyloss * cfg.anisotropy_lambda
             
@@ -488,7 +489,7 @@ class Runner:
                 irradiance = pbr_result["diffuse_light"][None, ...]
                 rendered_image = pbr_result["render_rgb"][None, ...]
 
-                if step % 1000 == 0:
+                if step % 2000 == 0:
                     wandb.log({
                         'train/surf': wandb.Image(rendered_image.data.cpu().numpy()), 
                         'train/irr': wandb.Image(irradiance.data.cpu().numpy())
@@ -566,10 +567,7 @@ class Runner:
                 if cfg.direct_normal_loss:
                     # self.writer.add_scalar("train/direct_normal_loss", direct_normal_loss.data, step)
                     wandb.log({"train/direct_normal_loss": direct_normal_loss.data}, step)
-                if cfg.anisotropy_loss:
-                    # self.writer.add_scalar("train/anisotropy_loss", anisotropyloss.data, step)
-                    wandb.log({"train/anisotropy_loss": anisotropyloss.data}, step)
-
+                
                 if step > cfg.surface_rendering_start_iter:
                     if cfg.irradiance_loss:
                         # self.writer.add_scalar("train/irradiance_loss", irradiance_loss.data, step)

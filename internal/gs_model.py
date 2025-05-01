@@ -6,6 +6,63 @@ from typing import Dict, Optional, Tuple
 from utils.utils import rgb_to_sh, knn
 
 
+def create_splats_with_optimizers_from_pth(
+    init_splats,
+    init_opacity: float = 0.8,
+    init_scale: float = 1.0,
+    scene_scale: float = 1.0,
+    sh_degree: int = 3,
+    sparse_grad: bool = False,
+    batch_size: int = 1,
+    device: str = "cuda",
+    **kwargs,
+) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
+    points = init_splats['means']
+    rgbs = init_splats['colors']
+    # scales = init_splats['scales']
+    intrinsics = init_splats['intrinsics']
+
+    N = points.shape[0]
+    # scales = torch.log(scales * init_scale)  # [N, 3]
+    quats = torch.zeros((N, 4), device=device)  # [N, 4]
+    quats[:, 0] = 1
+    opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
+
+    dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
+    dist_avg = torch.sqrt(dist2_avg)
+    scales = torch.log(dist_avg * init_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
+
+    params = [
+        # name, value, lr
+        ("means", torch.nn.Parameter(points), 1.6e-4 * scene_scale),
+        ("scales", torch.nn.Parameter(scales), 5e-3),
+        ("quats", torch.nn.Parameter(quats), 1e-3),
+        ("opacities", torch.nn.Parameter(opacities), 5e-2),
+    ]
+
+    # color is SH coefficients.
+    colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+    colors[:, 0, :] = rgb_to_sh(rgbs)
+    params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
+    params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
+   
+    # luzhan: add intrinsics for albedo, roughness, metallic, irradiance
+    intrinsics = torch.logit(intrinsics)
+    # intrinsics = torch.logit(torch.rand((N, 5)))
+    params.append(("intrinsics", torch.nn.Parameter(intrinsics), 2.5e-3))
+
+    splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
+    optimizers = {
+        name: (torch.optim.SparseAdam if sparse_grad else torch.optim.Adam)(
+            [{"params": splats[name], "lr": lr * math.sqrt(batch_size)}],
+            eps=1e-15 / math.sqrt(batch_size),
+            betas=(1 - batch_size * (1 - 0.9), 1 - batch_size * (1 - 0.999)),
+        )
+        for name, _, lr in params
+    }
+    return splats, optimizers
+
+
 def create_splats_with_optimizers(
     parser,
     init_type: str = "sfm",
@@ -138,3 +195,4 @@ def create_backgrpound_splats_with_optimizers(
         for name, _, lr in params if name in ["scales", "quats", "colors"]
     }
     return splats, optimizers
+

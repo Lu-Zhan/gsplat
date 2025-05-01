@@ -99,9 +99,13 @@ class Parser:
         image_paths = [os.path.join(image_dir, f) for f in image_names]
 
         # load ply
-        pc = trimesh.load(os.path.join(data_dir, 'points.ply'))
-        points = np.array(pc.vertices)
-        points_rgb = np.array(pc.colors)[:, :3]
+        # pc = trimesh.load(os.path.join(data_dir, 'points.ply'))
+        # points = np.array(pc.vertices)
+        # points_rgb = np.array(pc.colors)[:, :3]
+
+        splats_path = os.path.join(data_dir, 'init_splats.pth')
+        self.init_splats = torch.load(splats_path)
+        points = self.init_splats['means'].numpy()
         
         # Normalize the world space.
         if normalize:
@@ -127,8 +131,9 @@ class Parser:
         self.mask_dict = mask_dict  # Dict of camera_id -> mask
         self.transform = transform  # np.ndarray, (4, 4)
 
-        self.points = points  # np.ndarray, (num_points, 3)
-        self.points_rgb = points_rgb  # np.ndarray, (num_points, 3)
+        # self.points = points  # np.ndarray, (num_points, 3)
+        # self.points_rgb = points_rgb  # np.ndarray, (num_points, 3)
+        self.init_splats['means'] = torch.from_numpy(points).float()
 
         # size of the scene measured by cameras
         camera_locations = camtoworlds[:, :3, 3]
@@ -142,6 +147,10 @@ class Parser:
             cubemap = read_exr(cubemap_path)   
             self.cubemap = rearrange(cubemap, 'h (n w) c -> n h w c', n=6)
             self.cubemap = torch.from_numpy(self.cubemap).float()
+        
+        # load splats
+        # self.splats_path = os.path.join(data_dir, 'init_splats.pth')
+
 
 
 def get_canonical_rays(Ks, hw):
